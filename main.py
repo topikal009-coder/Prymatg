@@ -9,7 +9,7 @@ from pyrogram.errors import PeerIdInvalid, Forbidden
 # --- КОНФИГ ---
 API_ID = 30032542
 API_HASH = "ce646da1307fb452305d49f9bb8751ca"
-BOT_TOKEN =os.environ.get('BOT_TOKEN','8711240311:AAHy5FzxQ7P0MpSm3Bv7xfoYDa9kVlwAb5w')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8711240311:AAHy5FzxQ7P0MpSm3Bv7xfoYDa9kVlwAb5w')
 
 # === НАСТРОЙКА ОДНОРАЗОВЫХ КЛЮЧЕЙ ===
 ONE_TIME_KEYS = {
@@ -259,6 +259,39 @@ async def start(c, m):
             "Нажмите кнопку ниже чтобы ввести ключ.",
             reply_markup=ReplyKeyboardMarkup([["🔑 Ввести ключ доступа"]], resize_keyboard=True)
         )
+
+# НОВЫЙ ХЕНДЛЕР: Обработка нажатия кнопки "🔑 Ввести ключ доступа"
+@bot.on_message(filters.regex("🔑 Ввести ключ доступа"))
+async def enter_key_prompt(c, m):
+    user_id = m.from_user.id
+    
+    # Если пользователь уже имеет доступ, сообщаем об этом
+    if check_access(user_id):
+        return await m.reply(
+            "✅ У вас уже есть активный доступ!\n"
+            "Используйте /start для входа в личный кабинет.",
+            reply_markup=get_user_main_keyboard(user_id)
+        )
+    
+    # Устанавливаем шаг ввода ключа
+    temp_auth[user_id] = {"step": "enter_key", "user_id": user_id}
+    await m.reply(
+        "🔑 Пожалуйста, введите ваш одноразовый ключ доступа:",
+        reply_markup=ReplyKeyboardMarkup([["🔙 Отмена"]], resize_keyboard=True)
+    )
+
+# НОВЫЙ ХЕНДЛЕР: Отмена ввода
+@bot.on_message(filters.regex("🔙 Отмена"))
+async def cancel_input(c, m):
+    user_id = m.from_user.id
+    if user_id in temp_auth:
+        temp_auth.pop(user_id)
+    
+    await m.reply(
+        "❌ Ввод отменен.\n"
+        "Используйте /start для возврата в главное меню.",
+        reply_markup=ReplyKeyboardMarkup([["🔑 Ввести ключ доступа"]], resize_keyboard=True)
+    )
 
 @bot.on_message(filters.regex("➕ Добавить аккаунт"))
 async def add_account(c, m):
@@ -511,7 +544,10 @@ async def stats(c, m):
 @bot.on_message(filters.private & ~filters.command(["start"]))
 async def auth_handler(c, m):
     uid = m.from_user.id
-    if uid not in temp_auth: 
+    
+    # Проверяем, находится ли пользователь в режиме ввода
+    if uid not in temp_auth:
+        # Если не в режиме ввода, игнорируем сообщение
         return
     
     data = temp_auth[uid]
