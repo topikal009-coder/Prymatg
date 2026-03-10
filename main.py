@@ -20,8 +20,11 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8711240311:AAHy5FzxQ7P0MpSm3Bv7xfoYDa9k
 # === НАСТРОЙКА ОДНОРАЗОВЫХ КЛЮЧЕЙ ===
 ONE_TIME_KEYS = {
     "SECRET123": "Пользователь 1",
-    "ABCDEF456": "Пользователь 2",
-    "ADMINKEY999": "Администратор",
+    "pruma": "Пользователь 2",
+    "Iggor": "Пользователь 3",
+    "SECRET123": "Пользователь 4",
+    "ABCDEF456": "Пользователь 5",
+    "ADMINKEY": "Администратор",
 }
 
 KEY_EXPIRY_DAYS = 30
@@ -564,3 +567,4 @@ if __name__ == "__main__":
     # Запускаем бота
     logger.info("🤖 Бот запущен и готов к работе")
     bot.run()
+
