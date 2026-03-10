@@ -1,0 +1,16 @@
+{
+  "964442694": {
+    "expires": "2026-04-08T23:32:58.298269",
+    "key_used": "ADMINKEY999",
+    "is_admin": true,
+    "username": "Its_neverka",
+    "accounts": {
+      "+16452328143": {
+        "text": "Привет! Это рассылка.",
+        "interval": 3600,
+        "running": false,
+        "added_date": "2026-03-09T23:42:17.627965"
+      }
+    }
+  }
+}
