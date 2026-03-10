@@ -1,10 +1,11 @@
 import asyncio
 import os
 import json
+import re
 from datetime import datetime, timedelta
 from pyrogram import Client, filters, enums
 from pyrogram.types import ReplyKeyboardMarkup
-from pyrogram.errors import PeerIdInvalid, Forbidden, SessionRevoked, AuthKeyUnregistered, Unauthorized
+from pyrogram.errors import PeerIdInvalid, Forbidden, SessionRevoked, AuthKeyUnregistered, Unauthorized, UsernameNotOccupied
 from pyrogram.handlers import DisconnectHandler
 import logging
 
@@ -20,12 +21,49 @@ API_ID = 30032542
 API_HASH = "ce646da1307fb452305d49f9bb8751ca"
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8711240311:AAHy5FzxQ7P0MpSm3Bv7xfoYDa9kVlwAb5w')
 
+# === НАСТРОЙКА РАБОЧЕЙ ДИРЕКТОРИИ ДЛЯ RAILWAY ===
+WORK_DIR = os.environ.get('WORK_DIR', '/app/data' if os.path.exists('/app') else '.')
+os.makedirs(WORK_DIR, exist_ok=True)
+os.makedirs(os.path.join(WORK_DIR, 'sessions'), exist_ok=True)
+os.makedirs(os.path.join(WORK_DIR, 'user_settings'), exist_ok=True)
+
+logger.info(f"📁 Рабочая директория: {WORK_DIR}")
+
 # === НАСТРОЙКА ОДНОРАЗОВЫХ КЛЮЧЕЙ ===
-ONE_TIME_KEYS = {
-    "SECRET123": "Пользователь 1",
-    "ABCDEF456": "Пользователь 2",
-    "ADMINKEY999": "Администратор",
-}
+KEYS_FILE = os.path.join(WORK_DIR, 'activation_keys.json')
+
+def load_keys():
+    """Загружает ключи из файла"""
+    default_keys = {
+        "SECRET123": "Пользователь 1",
+        "ABCDEF456": "Пользователь 2", 
+        "ADMINKEY999": "Администратор",
+    }
+    
+    try:
+        if os.path.exists(KEYS_FILE):
+            with open(KEYS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        else:
+            # Создаем файл с ключами по умолчанию
+            with open(KEYS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(default_keys, f, ensure_ascii=False, indent=2)
+            return default_keys
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки ключей: {e}")
+        return default_keys
+
+def save_keys(keys):
+    """Сохраняет ключи в файл"""
+    try:
+        with open(KEYS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(keys, f, ensure_ascii=False, indent=2)
+        logger.info("✅ Ключи сохранены")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения ключей: {e}")
+
+# Загружаем ключи
+ONE_TIME_KEYS = load_keys()
 
 KEY_EXPIRY_DAYS = 30
 MAX_ACCOUNTS_PER_USER = 3
@@ -36,7 +74,7 @@ bot = Client("manager_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKE
 # Структура данных пользователей
 users_data = {}
 temp_auth = {}
-users_file = "bot_users.json"
+users_file = os.path.join(WORK_DIR, "bot_users.json")
 reconnect_tasks = {}
 
 # --- ФУНКЦИИ ДЛЯ РАБОТЫ С ПОЛЬЗОВАТЕЛЯМИ ---
@@ -49,19 +87,22 @@ def save_users():
         for phone, acc in data["accounts"].items():
             # Очищаем номер для имени файла
             clean_phone = phone.replace('+', '').replace(' ', '')
+            session_path = os.path.join(WORK_DIR, 'sessions', f"{clean_phone}_{uid}")
+            
             accounts[phone] = {
                 "text": acc["text"],
                 "interval": acc["interval"],
                 "running": False,
                 "added_date": acc["added_date"].isoformat() if isinstance(acc["added_date"], datetime) else acc["added_date"],
-                "session_name": f"sessions/{clean_phone}_{uid}"
+                "session_name": session_path
             }
         
         users_to_save[str(uid)] = {
-            "expires": data["expires"].isoformat(),
+            "expires": data["expires"].isoformat() if isinstance(data["expires"], datetime) else data["expires"],
             "key_used": data["key_used"],
             "is_admin": data["is_admin"],
             "username": data.get("username", ""),
+            "bound_username": data.get("bound_username", ""),  # Новое поле: к какому username привязан
             "accounts": accounts
         }
     
@@ -80,7 +121,7 @@ def load_users():
             
             for uid, data in loaded_data.items():
                 uid = int(uid)
-                expires = datetime.fromisoformat(data["expires"])
+                expires = datetime.fromisoformat(data["expires"]) if isinstance(data["expires"], str) else data["expires"]
                 
                 if expires > datetime.now():
                     accounts = {}
@@ -90,7 +131,7 @@ def load_users():
                             "interval": acc_data["interval"],
                             "running": False,
                             "added_date": datetime.fromisoformat(acc_data["added_date"]) if isinstance(acc_data.get("added_date"), str) else datetime.now(),
-                            "session_name": acc_data.get("session_name", f"sessions/{phone.replace('+', '').replace(' ', '')}_{uid}")
+                            "session_name": acc_data.get("session_name", os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{uid}"))
                         }
                     
                     users_data[uid] = {
@@ -98,6 +139,7 @@ def load_users():
                         "key_used": data["key_used"],
                         "is_admin": data["is_admin"],
                         "username": data.get("username", ""),
+                        "bound_username": data.get("bound_username", ""),
                         "accounts": accounts
                     }
             
@@ -107,17 +149,64 @@ def load_users():
         logger.error(f"❌ Ошибка загрузки пользователей: {e}")
         return False
 
+# === НОВАЯ ФУНКЦИЯ: Парсинг ключа с username ===
+def parse_key_with_username(key_text):
+    """
+    Парсит ключ в формате "key123-@username"
+    Возвращает (key, username) или (key, None) если username не указан
+    """
+    # Ищем паттерн: что-то, потом дефис, потом @username
+    pattern = r'^(.*?)-@([a-zA-Z0-9_]+)$'
+    match = re.match(pattern, key_text.strip())
+    
+    if match:
+        key = match.group(1)
+        username = match.group(2)
+        return key, username
+    else:
+        return key_text.strip(), None
+
+# === НОВАЯ ФУНКЦИЯ: Проверка привязки ключа к пользователю ===
+def check_key_binding(key, user_id, username):
+    """
+    Проверяет, может ли пользователь использовать этот ключ
+    с учетом привязки к username
+    """
+    current_keys = load_keys()
+    
+    if key not in current_keys:
+        return False, "Ключ не существует"
+    
+    # Получаем значение ключа
+    key_value = current_keys[key]
+    
+    # Проверяем, является ли ключ привязанным (содержит @)
+    if isinstance(key_value, str) and '@' in key_value:
+        bound_username = key_value.replace('@', '')  # убираем @ для сравнения
+        
+        # Сравниваем с username пользователя
+        user_clean = username.replace('@', '') if username else ''
+        
+        if user_clean.lower() != bound_username.lower():
+            return False, f"❌ Этот ключ привязан к пользователю @{bound_username}"
+        else:
+            return True, "Ключ подходит"
+    else:
+        # Обычный ключ без привязки
+        return True, "Обычный ключ"
+
 async def load_user_sessions():
     """Загружает сессии для всех пользователей"""
-    if not os.path.exists("sessions"):
-        os.makedirs("sessions")
-        logger.info("📁 Создана папка sessions")
+    sessions_dir = os.path.join(WORK_DIR, 'sessions')
+    if not os.path.exists(sessions_dir):
+        os.makedirs(sessions_dir)
+        logger.info(f"📁 Создана папка сессий: {sessions_dir}")
     
     loaded_count = 0
     for user_id, user_data in users_data.items():
         for phone, acc_data in user_data["accounts"].items():
             try:
-                session_name = acc_data.get("session_name", f"sessions/{phone.replace('+', '').replace(' ', '')}_{user_id}")
+                session_name = acc_data.get("session_name", os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{user_id}"))
                 
                 # Проверяем существование файла сессии
                 session_file = f"{session_name}.session"
@@ -174,7 +263,7 @@ async def reconnect_account(user_id, phone):
         return
     
     acc_data = users_data[user_id]["accounts"][phone]
-    session_name = acc_data.get("session_name", f"sessions/{phone.replace('+', '').replace(' ', '')}_{user_id}")
+    session_name = acc_data.get("session_name", os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{user_id}"))
     
     try:
         # Пробуем переподключиться
@@ -201,7 +290,10 @@ def check_access(user_id):
     """Проверяет доступ пользователя"""
     if user_id in users_data:
         user_data = users_data[user_id]
-        if user_data["expires"] > datetime.now():
+        expires = user_data["expires"]
+        if isinstance(expires, str):
+            expires = datetime.fromisoformat(expires)
+        if expires > datetime.now():
             return True
         else:
             # Закрываем все клиенты перед удалением
@@ -230,7 +322,8 @@ def get_user_main_keyboard(user_id):
             ["🛑 Стоп рассылки", "⚙️ Настройки текста"],
             ["⏱ Настройки интервала", "💾 Сохранить настройки"],
             ["📂 Загрузить настройки", "🔑 Управление ключами"],
-            ["👥 Все пользователи", "📊 Статистика"]
+            ["👥 Все пользователи", "📊 Статистика"],
+            ["🔗 Привязать ключ к юзеру"]  # Новая кнопка
         ], resize_keyboard=True)
     else:
         return ReplyKeyboardMarkup([
@@ -323,11 +416,20 @@ async def start(c, m):
     
     if check_access(user_id):
         accounts_count = len(users_data[user_id]["accounts"])
+        expires = users_data[user_id]["expires"]
+        if isinstance(expires, str):
+            expires = datetime.fromisoformat(expires)
+        
+        bound_info = ""
+        if users_data[user_id].get("bound_username"):
+            bound_info = f"🔗 Привязан к: @{users_data[user_id]['bound_username']}\n"
+        
         await m.reply(
             f"👋 Добро пожаловать в личный кабинет, {username}!\n\n"
             f"📊 Ваша статистика:\n"
             f"📱 Аккаунтов: {accounts_count}/{MAX_ACCOUNTS_PER_USER}\n"
-            f"📅 Доступ до: {users_data[user_id]['expires'].strftime('%d.%m.%Y')}\n"
+            f"📅 Доступ до: {expires.strftime('%d.%m.%Y')}\n"
+            f"{bound_info}"
             f"👑 Статус: {'Администратор' if is_admin(user_id) else 'Пользователь'}",
             reply_markup=get_user_main_keyboard(user_id)
         )
@@ -335,6 +437,9 @@ async def start(c, m):
         await m.reply(
             "🔐 Доступ ограничен\n\n"
             "Для использования бота введите одноразовый ключ доступа.\n"
+            "Ключ можно ввести в формате:\n"
+            "• обычный ключ: KEY123\n"
+            "• привязанный ключ: KEY123-@username\n\n"
             "Нажмите кнопку ниже чтобы ввести ключ.",
             reply_markup=ReplyKeyboardMarkup([["🔑 Ввести ключ доступа"]], resize_keyboard=True)
         )
@@ -351,12 +456,14 @@ async def enter_key_prompt(c, m):
             reply_markup=get_user_main_keyboard(user_id)
         )
     
-    # ИСПРАВЛЕНО: Добавляем user_id в данные
     temp_auth[user_id] = {"step": "enter_key", "user_id": user_id}
     logger.info(f"Установлен шаг enter_key для пользователя {user_id}")
     
     await m.reply(
-        "🔑 Пожалуйста, введите ваш одноразовый ключ доступа:",
+        "🔑 Пожалуйста, введите ваш одноразовый ключ доступа:\n\n"
+        "Форматы:\n"
+        "• KEY123 - обычный ключ\n"
+        "• KEY123-@username - ключ для конкретного пользователя",
         reply_markup=ReplyKeyboardMarkup([["🔙 Отмена"]], resize_keyboard=True)
     )
 
@@ -374,7 +481,6 @@ async def cancel_input(c, m):
         reply_markup=ReplyKeyboardMarkup([["🔑 Ввести ключ доступа"]], resize_keyboard=True)
     )
 
-# --- ВАЖНО: Этот хендлер обрабатывает ВСЕ текстовые сообщения ---
 @bot.on_message(filters.text & filters.private)
 async def handle_all_messages(c, m):
     """Универсальный обработчик всех текстовых сообщений"""
@@ -416,53 +522,81 @@ async def handle_all_messages(c, m):
             # Подтверждение интервала
             await handle_interval_confirm(c, m)
             return
+        elif step == "bind_key":
+            # Обработка привязки ключа
+            await handle_bind_key(c, m)
+            return
     
     # Если пользователь не в режиме ввода, проверяем команды из меню
     await handle_menu_commands(c, m)
 
-# ИСПРАВЛЕНО: Функция обработки ключа
+# === ОБНОВЛЕННАЯ ФУНКЦИЯ: Обработка ключа с поддержкой привязки ===
 async def handle_key_input(c, m):
     """Обработка ввода ключа доступа"""
     user_id = m.from_user.id
-    key = m.text.strip()
+    raw_key = m.text.strip()
+    username = m.from_user.username or ""
     
-    logger.info(f"Пользователь {user_id} ввел ключ: {key}")
+    logger.info(f"Пользователь {user_id} ввел ключ: {raw_key}")
     
-    if key in ONE_TIME_KEYS:
+    # Парсим ключ и username
+    key, bound_username = parse_key_with_username(raw_key)
+    
+    # Загружаем актуальные ключи
+    current_keys = load_keys()
+    
+    if key in current_keys:
+        # Проверяем привязку
+        can_use, message = check_key_binding(key, user_id, username)
+        
+        if not can_use:
+            await m.reply(message)
+            logger.info(f"❌ Ключ {key} отклонен для {user_id}: {message}")
+            return
+        
         # Проверяем, не использован ли ключ
         key_used = False
-        for user_data in users_data.values():
+        for uid, user_data in users_data.items():
             if user_data["key_used"] == key:
                 key_used = True
+                # Проверяем, не пытается ли тот же пользователь использовать тот же ключ
+                if uid == user_id:
+                    await m.reply("❌ Вы уже использовали этот ключ!")
+                    return
                 break
         
         if key_used:
-            await m.reply("❌ Этот ключ уже был использован!")
+            await m.reply("❌ Этот ключ уже был использован другим пользователем!")
             logger.info(f"Ключ {key} уже использован")
         else:
-            owner = ONE_TIME_KEYS[key]
-            is_admin_key = "ADMIN" in key or "админ" in owner.lower()
+            owner = current_keys[key]
+            
+            # Определяем, является ли ключ админским
+            is_admin_key = "ADMIN" in key or "админ" in owner.lower() or key == "ADMINKEY999"
             
             expires = datetime.now() + timedelta(days=KEY_EXPIRY_DAYS)
-            username = m.from_user.username or m.from_user.first_name
             
             # Создаем нового пользователя
             users_data[user_id] = {
-                "expires": expires,
+                "expires": expires.isoformat(),
                 "key_used": key,
                 "is_admin": is_admin_key,
-                "username": username,
+                "username": username or m.from_user.first_name,
+                "bound_username": bound_username if bound_username else "",
                 "accounts": {}
             }
             
             save_users()
             
             role = "👑 Администратор" if is_admin_key else "👤 Пользователь"
+            bound_info = f"🔗 Привязан к: @{bound_username}\n" if bound_username else ""
+            
             await m.reply(
                 f"✅ Доступ предоставлен!\n\n"
                 f"{role}\n"
                 f"Ключ: {key}\n"
                 f"Владелец ключа: {owner}\n"
+                f"{bound_info}"
                 f"Срок действия до: {expires.strftime('%d.%m.%Y %H:%M')}\n\n"
                 f"Используйте /start для входа в личный кабинет",
                 reply_markup=get_user_main_keyboard(user_id)
@@ -477,13 +611,45 @@ async def handle_key_input(c, m):
         await m.reply("❌ Неверный ключ доступа!")
         logger.info(f"Неверный ключ: {key}")
 
+# === НОВАЯ ФУНКЦИЯ: Привязка ключа к пользователю (для админов) ===
+async def handle_bind_key(c, m):
+    """Обработка привязки ключа к пользователю"""
+    user_id = m.from_user.id
+    data = temp_auth[user_id]
+    
+    # Ожидаем ввод в формате "ключ-@username"
+    text = m.text.strip()
+    
+    # Проверяем формат
+    key, username = parse_key_with_username(text)
+    
+    if not username:
+        await m.reply("❌ Неверный формат! Используйте: ключ-@username\nНапример: KEY123-@durov")
+        return
+    
+    # Загружаем текущие ключи
+    current_keys = load_keys()
+    
+    # Добавляем или обновляем ключ
+    current_keys[key] = f"@{username}"
+    save_keys(current_keys)
+    
+    await m.reply(
+        f"✅ Ключ успешно привязан!\n\n"
+        f"🔑 Ключ: {key}\n"
+        f"👤 Привязан к: @{username}\n\n"
+        f"Теперь этот ключ может использовать только пользователь @{username}"
+    )
+    
+    temp_auth.pop(user_id)
+
 async def handle_phone_input(c, m):
     """Обработка ввода номера телефона"""
     user_id = m.from_user.id
     phone = m.text
     
     try:
-        session_name = f"sessions/{phone.replace('+', '').replace(' ', '')}_{user_id}"
+        session_name = os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{user_id}")
         client = Client(session_name, api_id=API_ID, api_hash=API_HASH, phone_number=phone)
         await client.connect()
         sent = await client.send_code(phone)
@@ -614,9 +780,15 @@ async def handle_menu_commands(c, m):
         user_data = users_data[user_id]
         accounts = user_data["accounts"]
         
+        expires = user_data["expires"]
+        if isinstance(expires, str):
+            expires = datetime.fromisoformat(expires)
+        
         total_accounts = len(accounts)
         running_accounts = sum(1 for acc in accounts.values() if acc.get("running", False))
         active_clients = sum(1 for acc in accounts.values() if "client" in acc)
+        
+        bound_info = f"🔗 Привязан к: @{user_data['bound_username']}\n" if user_data.get('bound_username') else ""
         
         accounts_info = ""
         for phone, acc in accounts.items():
@@ -628,7 +800,8 @@ async def handle_menu_commands(c, m):
             f"👤 Личный кабинет\n\n"
             f"🆔 ID: {user_id}\n"
             f"👤 Имя: {user_data.get('username', 'Не указано')}\n"
-            f"📅 Доступ до: {user_data['expires'].strftime('%d.%m.%Y')}\n"
+            f"{bound_info}"
+            f"📅 Доступ до: {expires.strftime('%d.%m.%Y')}\n"
             f"🔑 Использован ключ: {user_data['key_used']}\n"
             f"👑 Админ: {'Да' if is_admin(user_id) else 'Нет'}\n\n"
             f"📊 Статистика аккаунтов:\n"
@@ -683,13 +856,20 @@ async def handle_menu_commands(c, m):
     
     elif text == "🔑 Информация о доступе":
         data = users_data[user_id]
-        days_left = (data["expires"] - datetime.now()).days
+        expires = data["expires"]
+        if isinstance(expires, str):
+            expires = datetime.fromisoformat(expires)
+        
+        days_left = (expires - datetime.now()).days
+        
+        bound_info = f"🔗 Привязан к: @{data['bound_username']}\n" if data.get('bound_username') else ""
         
         await m.reply(
             f"🔑 Информация о доступе:\n\n"
             f"✅ Доступ активен\n"
             f"🔑 Ключ: {data['key_used']}\n"
-            f"📅 Истекает: {data['expires'].strftime('%d.%m.%Y')}\n"
+            f"{bound_info}"
+            f"📅 Истекает: {expires.strftime('%d.%m.%Y')}\n"
             f"⏳ Осталось дней: {days_left}\n"
             f"👑 Права: {'Администратор' if is_admin(user_id) else 'Пользователь'}"
         )
@@ -697,10 +877,21 @@ async def handle_menu_commands(c, m):
     # Админские команды
     elif is_admin(user_id):
         if text == "🔑 Управление ключами":
+            current_keys = load_keys()
             keys_list = "📋 Доступные одноразовые ключи:\n\n"
-            for key, owner in ONE_TIME_KEYS.items():
+            for key, owner in current_keys.items():
                 used = False
                 used_by = ""
+                bound_to = ""
+                
+                # Проверяем, привязан ли ключ
+                if isinstance(owner, str) and owner.startswith('@'):
+                    bound_to = f" (привязан к {owner})"
+                    # Для привязанных ключей показываем чистый ключ без привязки
+                    display_key = key
+                else:
+                    display_key = key
+                
                 for uid, user_data in users_data.items():
                     if user_data["key_used"] == key:
                         used = True
@@ -708,9 +899,28 @@ async def handle_menu_commands(c, m):
                         break
                 
                 status = "❌" if used else "✅"
-                keys_list += f"{status} {key} - {owner}{used_by}\n"
+                keys_list += f"{status} {display_key} - {owner}{bound_to}{used_by}\n"
             
-            await m.reply(keys_list)
+            # Добавляем инструкцию
+            keys_list += "\n\n📝 Команды:\n"
+            keys_list += "• Обычный ключ: просто ключ\n"
+            keys_list += "• Привязанный ключ: ключ-@username\n"
+            keys_list += "Нажмите кнопку ниже для привязки ключа"
+            
+            await m.reply(
+                keys_list,
+                reply_markup=ReplyKeyboardMarkup([["🔗 Привязать ключ к юзеру", "🔙 Назад"]], resize_keyboard=True)
+            )
+        
+        elif text == "🔗 Привязать ключ к юзеру":
+            temp_auth[user_id] = {"step": "bind_key", "user_id": user_id}
+            await m.reply(
+                "🔗 Введите ключ и username в формате:\n"
+                "`ключ-@username`\n\n"
+                "Например: `KEY123-@durov`\n\n"
+                "Этот ключ сможет использовать только пользователь с username @durov",
+                reply_markup=ReplyKeyboardMarkup([["🔙 Отмена"]], resize_keyboard=True)
+            )
         
         elif text == "👥 Все пользователи":
             if not users_data:
@@ -718,11 +928,17 @@ async def handle_menu_commands(c, m):
             else:
                 users_list = "👥 Все пользователи:\n\n"
                 for uid, data in users_data.items():
+                    expires = data["expires"]
+                    if isinstance(expires, str):
+                        expires = datetime.fromisoformat(expires)
+                    
                     accounts_count = len(data["accounts"])
+                    bound_info = f" (привязан к @{data['bound_username']})" if data.get('bound_username') else ""
                     users_list += f"🆔 {uid}\n"
-                    users_list += f"👤 {data.get('username', 'Нет username')}\n"
+                    users_list += f"👤 {data.get('username', 'Нет username')}{bound_info}\n"
                     users_list += f"📱 Аккаунтов: {accounts_count}\n"
-                    users_list += f"📅 Доступ до: {data['expires'].strftime('%d.%m.%Y')}\n"
+                    users_list += f"📅 Доступ до: {expires.strftime('%d.%m.%Y')}\n"
+                    users_list += f"🔑 Ключ: {data['key_used']}\n"
                     users_list += f"👑 Админ: {'Да' if data['is_admin'] else 'Нет'}\n\n"
                 
                 if len(users_list) > 4000:
@@ -739,8 +955,12 @@ async def handle_menu_commands(c, m):
                 for data in users_data.values()
             )
             
-            total_keys = len(ONE_TIME_KEYS)
-            used_keys = sum(1 for user_data in users_data.values() if user_data["key_used"] in ONE_TIME_KEYS)
+            current_keys = load_keys()
+            total_keys = len(current_keys)
+            used_keys = sum(1 for user_data in users_data.values() if user_data["key_used"] in current_keys)
+            
+            # Подсчет привязанных ключей
+            bound_keys = sum(1 for v in current_keys.values() if isinstance(v, str) and v.startswith('@'))
             
             stats_text = (
                 f"📊 Общая статистика бота:\n\n"
@@ -748,6 +968,7 @@ async def handle_menu_commands(c, m):
                 f"📱 Всего аккаунтов: {total_accounts}\n"
                 f"🟢 Активных рассылок: {total_running}\n"
                 f"🔑 Всего ключей: {total_keys}\n"
+                f"🔗 Привязанных ключей: {bound_keys}\n"
                 f"✅ Использовано ключей: {used_keys}\n"
                 f"📦 Осталось ключей: {total_keys - used_keys}\n"
             )
@@ -758,7 +979,7 @@ async def finalize_user_account(uid, data, m):
     """Завершает добавление аккаунта"""
     user_id = data["user_id"]
     phone = data["phone"]
-    session_name = f"sessions/{phone.replace('+', '').replace(' ', '')}_{user_id}"
+    session_name = os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{user_id}")
     
     client = data["client"]
     
@@ -775,7 +996,7 @@ async def finalize_user_account(uid, data, m):
         "text": "Привет! Это рассылка.",
         "interval": 3600,
         "running": False,
-        "added_date": datetime.now(),
+        "added_date": datetime.now().isoformat(),
         "session_name": session_name
     }
     
@@ -790,9 +1011,9 @@ async def finalize_user_account(uid, data, m):
     logger.info(f"✅ Аккаунт {phone} добавлен для пользователя {user_id}")
 
 if __name__ == "__main__":
-    # Создаем необходимые папки
-    os.makedirs("sessions", exist_ok=True)
-    os.makedirs("user_settings", exist_ok=True)
+    # Создаем необходимые папки в WORK_DIR
+    os.makedirs(os.path.join(WORK_DIR, "sessions"), exist_ok=True)
+    os.makedirs(os.path.join(WORK_DIR, "user_settings"), exist_ok=True)
     
     # Загружаем данные
     load_users()
@@ -802,7 +1023,8 @@ if __name__ == "__main__":
     
     async def startup():
         await load_user_sessions()
-        logger.info(f"🔑 Доступные ключи: {list(ONE_TIME_KEYS.keys())}")
+        current_keys = load_keys()
+        logger.info(f"🔑 Доступные ключи: {list(current_keys.keys())}")
         logger.info(f"👥 Пользователей: {len(users_data)}")
     
     loop.run_until_complete(startup())
