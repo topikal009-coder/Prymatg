@@ -14,7 +14,9 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8711240311:AAHy5FzxQ7P0MpSm3Bv7xfoYDa9k
 # === НАСТРОЙКА ОДНОРАЗОВЫХ КЛЮЧЕЙ ===
 ONE_TIME_KEYS = {
     "SECRET123": "Пользователь 1",
-    "ABCDEF456": "Пользователь 2",
+    "pryma": "Пользователь 2",
+    "igor": "Пользователь 3",
+    "ABCDEF456": "Пользователь 4",
     "ADMINKEY999": "Администратор",
 }
 
@@ -691,3 +693,4 @@ if __name__ == "__main__":
     print(f"👥 Пользователей: {len(users_data)}")
 
     bot.run()
+
