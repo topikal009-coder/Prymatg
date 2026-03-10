@@ -351,7 +351,8 @@ async def enter_key_prompt(c, m):
             reply_markup=get_user_main_keyboard(user_id)
         )
     
-    temp_auth[user_id] = {"step": "enter_key"}
+    # ИСПРАВЛЕНО: Добавляем user_id в данные
+    temp_auth[user_id] = {"step": "enter_key", "user_id": user_id}
     logger.info(f"Установлен шаг enter_key для пользователя {user_id}")
     
     await m.reply(
@@ -382,68 +383,17 @@ async def handle_all_messages(c, m):
     
     logger.info(f"Получено сообщение от {user_id}: {text}")
     
-    # Проверяем, находится ли пользователь в режиме ввода ключа
+    # Проверяем, находится ли пользователь в режиме ввода
     if user_id in temp_auth:
         step = temp_auth[user_id].get("step")
         logger.info(f"Пользователь {user_id} в шаге: {step}")
         
         if step == "enter_key":
             # Обрабатываем ввод ключа
-            key = text.strip()
-            logger.info(f"Пользователь {user_id} ввел ключ: {key}")
-            
-            if key in ONE_TIME_KEYS:
-                # Проверяем, не использован ли ключ
-                key_used = False
-                for user_data in users_data.values():
-                    if user_data["key_used"] == key:
-                        key_used = True
-                        break
-                
-                if key_used:
-                    await m.reply("❌ Этот ключ уже был использован!")
-                    logger.info(f"Ключ {key} уже использован")
-                else:
-                    owner = ONE_TIME_KEYS[key]
-                    is_admin_key = "ADMIN" in key or "админ" in owner.lower()
-                    
-                    expires = datetime.now() + timedelta(days=KEY_EXPIRY_DAYS)
-                    username = m.from_user.username or m.from_user.first_name
-                    
-                    # Создаем нового пользователя
-                    users_data[user_id] = {
-                        "expires": expires,
-                        "key_used": key,
-                        "is_admin": is_admin_key,
-                        "username": username,
-                        "accounts": {}
-                    }
-                    
-                    save_users()
-                    
-                    role = "👑 Администратор" if is_admin_key else "👤 Пользователь"
-                    await m.reply(
-                        f"✅ Доступ предоставлен!\n\n"
-                        f"{role}\n"
-                        f"Ключ: {key}\n"
-                        f"Владелец ключа: {owner}\n"
-                        f"Срок действия до: {expires.strftime('%d.%m.%Y %H:%M')}\n\n"
-                        f"Используйте /start для входа в личный кабинет",
-                        reply_markup=get_user_main_keyboard(user_id)
-                    )
-                    
-                    logger.info(f"✅ Пользователь {user_id} получил доступ с ключом {key}")
-                    
-                    # Очищаем временные данные
-                    temp_auth.pop(user_id, None)
-            else:
-                await m.reply("❌ Неверный ключ доступа!")
-                logger.info(f"Неверный ключ: {key}")
-            
-            return  # Важно: возвращаем, чтобы не обрабатывать дальше
-        
+            await handle_key_input(c, m)
+            return
         elif step == "phone":
-            # Обработка ввода телефона (для добавления аккаунта)
+            # Обработка ввода телефона
             await handle_phone_input(c, m)
             return
         elif step == "code":
@@ -451,11 +401,11 @@ async def handle_all_messages(c, m):
             await handle_code_input(c, m)
             return
         elif step == "password":
-            # Обработка ввода пароля 2FA
+            # Обработка ввода пароля
             await handle_password_input(c, m)
             return
         elif step == "text":
-            # Обработка ввода текста рассылки
+            # Обработка ввода текста
             await handle_text_input(c, m)
             return
         elif step == "interval":
@@ -469,6 +419,63 @@ async def handle_all_messages(c, m):
     
     # Если пользователь не в режиме ввода, проверяем команды из меню
     await handle_menu_commands(c, m)
+
+# ИСПРАВЛЕНО: Функция обработки ключа
+async def handle_key_input(c, m):
+    """Обработка ввода ключа доступа"""
+    user_id = m.from_user.id
+    key = m.text.strip()
+    
+    logger.info(f"Пользователь {user_id} ввел ключ: {key}")
+    
+    if key in ONE_TIME_KEYS:
+        # Проверяем, не использован ли ключ
+        key_used = False
+        for user_data in users_data.values():
+            if user_data["key_used"] == key:
+                key_used = True
+                break
+        
+        if key_used:
+            await m.reply("❌ Этот ключ уже был использован!")
+            logger.info(f"Ключ {key} уже использован")
+        else:
+            owner = ONE_TIME_KEYS[key]
+            is_admin_key = "ADMIN" in key or "админ" in owner.lower()
+            
+            expires = datetime.now() + timedelta(days=KEY_EXPIRY_DAYS)
+            username = m.from_user.username or m.from_user.first_name
+            
+            # Создаем нового пользователя
+            users_data[user_id] = {
+                "expires": expires,
+                "key_used": key,
+                "is_admin": is_admin_key,
+                "username": username,
+                "accounts": {}
+            }
+            
+            save_users()
+            
+            role = "👑 Администратор" if is_admin_key else "👤 Пользователь"
+            await m.reply(
+                f"✅ Доступ предоставлен!\n\n"
+                f"{role}\n"
+                f"Ключ: {key}\n"
+                f"Владелец ключа: {owner}\n"
+                f"Срок действия до: {expires.strftime('%d.%m.%Y %H:%M')}\n\n"
+                f"Используйте /start для входа в личный кабинет",
+                reply_markup=get_user_main_keyboard(user_id)
+            )
+            
+            logger.info(f"✅ Пользователь {user_id} получил доступ с ключом {key}")
+            
+            # Очищаем временные данные
+            if user_id in temp_auth:
+                temp_auth.pop(user_id)
+    else:
+        await m.reply("❌ Неверный ключ доступа!")
+        logger.info(f"Неверный ключ: {key}")
 
 async def handle_phone_input(c, m):
     """Обработка ввода номера телефона"""
@@ -523,7 +530,11 @@ async def handle_password_input(c, m):
 async def handle_text_input(c, m):
     """Обработка ввода текста рассылки"""
     user_id = m.from_user.id
-    data = temp_auth[user_id]
+    
+    if user_id not in users_data:
+        await m.reply("❌ Пользователь не найден")
+        temp_auth.pop(user_id, None)
+        return
     
     for acc in users_data[user_id]["accounts"].values():
         acc["text"] = m.text
@@ -579,7 +590,7 @@ async def handle_menu_commands(c, m):
         if len(users_data[user_id]["accounts"]) >= MAX_ACCOUNTS_PER_USER:
             await m.reply(f"❌ Вы достигли лимита аккаунтов ({MAX_ACCOUNTS_PER_USER}).")
         else:
-            temp_auth[user_id] = {"step": "phone"}
+            temp_auth[user_id] = {"step": "phone", "user_id": user_id}
             await m.reply("📱 Введите номер телефона в международном формате (например, +380123456789):")
     
     elif text == "📱 Мои аккаунты":
@@ -660,14 +671,14 @@ async def handle_menu_commands(c, m):
         if not users_data[user_id]["accounts"]:
             await m.reply("❌ Сначала добавьте аккаунт!")
         else:
-            temp_auth[user_id] = {"step": "text"}
+            temp_auth[user_id] = {"step": "text", "user_id": user_id}
             await m.reply("✏️ Введите новый текст для рассылки:")
     
     elif text == "⏱ Настройки интервала":
         if not users_data[user_id]["accounts"]:
             await m.reply("❌ Сначала добавьте аккаунт!")
         else:
-            temp_auth[user_id] = {"step": "interval"}
+            temp_auth[user_id] = {"step": "interval", "user_id": user_id}
             await m.reply("⏱ Введите интервал между циклами рассылки (в секундах):")
     
     elif text == "🔑 Информация о доступе":
@@ -769,7 +780,11 @@ async def finalize_user_account(uid, data, m):
     }
     
     await m.reply(f"✅ Аккаунт {phone} успешно добавлен!")
-    temp_auth.pop(uid)
+    
+    # Очищаем временные данные
+    if uid in temp_auth:
+        temp_auth.pop(uid)
+    
     save_users()
     
     logger.info(f"✅ Аккаунт {phone} добавлен для пользователя {user_id}")
