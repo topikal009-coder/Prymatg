@@ -59,13 +59,15 @@ KEYS_FILE = os.path.join(WORK_DIR, 'activation_keys.json')
 def load_keys():
     """Загружает ключи из файла"""
     default_keys = {
-        "artem": "Пользователь 1",
+        "artem": "Администратор",
         "pryma": "Пользователь 2",
         "igor": "Пользователь 3", 
         "fbfs-sdfs-456d-h34k": "Пользователь 4",
-        "jhsd-j34k-dfyt-mh3l": "Пользователь 5", 
+        "jhsd-j34k-dfyt-mh3l": "Пользователь 5",
+        "fbgs-sdfs-d56d-g34k": "Пользователь 4",
+        "jhsd-hj4k-43yt-mh3l": "Пользователь 5", 
         "34gd-fgh5-hfg3-s37h": "Пользователь 6",
-        "ADMINKEY999": "Администратор",
+        "ADMIN": "Администратор",
     }
     
     try:
@@ -1267,4 +1269,5 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
         loop.run_until_complete(shutdown())
+
 
