@@ -122,7 +122,6 @@ def has_active_subscription(user_id):
     return expires > datetime.now()
 
 def ensure_user_exists(user_id, username=""):
-    """Создаёт пользователя с истекшей подпиской, если его нет"""
     if user_id not in users_data:
         users_data[user_id] = {
             "expires": (datetime.now() - timedelta(days=1)).isoformat(),
@@ -541,13 +540,11 @@ async def activate_key(user_id, key_text):
         else:
             desc, days, is_admin_key = key_info
     else:
-        # старый формат (только описание) – считаем 30 дней, не админ
         desc = key_info
         days = 30
         is_admin_key = False
 
     ensure_user_exists(user_id)
-    # Продлеваем подписку: новая дата = max(текущая, сейчас) + days
     old_expires = datetime.fromisoformat(users_data[user_id]["expires"])
     new_expires = max(old_expires, datetime.now()) + timedelta(days=days)
     users_data[user_id]["expires"] = new_expires.isoformat()
@@ -590,6 +587,12 @@ async def handle_text(c: Client, m: Message):
     text = m.text
 
     ensure_user_exists(user_id, m.from_user.username or m.from_user.first_name)
+
+    # Логируем текущий шаг для отладки
+    if user_id in temp_auth:
+        logger.info(f"Пользователь {user_id} в шаге: {temp_auth[user_id].get('step')}")
+    else:
+        logger.info(f"Пользователь {user_id} не в режиме ожидания ввода")
 
     if user_id in temp_auth and temp_auth[user_id].get("step") == "phone":
         await process_phone_input(c, m)
@@ -673,12 +676,12 @@ async def handle_text(c: Client, m: Message):
             await m.reply("❌ Введите число.")
         return
     if user_id in temp_auth and temp_auth[user_id].get("step") == "wait_key":
+        logger.info(f"Обработка ключа от пользователя {user_id}: {text[:30]}...")
         success, message = await activate_key(user_id, text.strip())
         await m.reply(message, reply_markup=get_main_keyboard(user_id))
         temp_auth.pop(user_id)
         return
     if user_id in temp_auth and temp_auth[user_id].get("step") == "create_key_days":
-        # ожидаем количество дней
         try:
             days = int(text.strip())
             if days <= 0:
@@ -694,7 +697,6 @@ async def handle_text(c: Client, m: Message):
         desc = text.strip()
         days = temp_auth[user_id]["days"]
         is_admin = temp_auth[user_id].get("is_admin", False)
-        # Генерируем ключ
         new_key = generate_random_key()
         keys = load_keys()
         keys[new_key] = (desc, days, is_admin)
