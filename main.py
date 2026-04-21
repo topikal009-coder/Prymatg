@@ -32,8 +32,8 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7
 # === ID АДМИНИСТРАТОРОВ (укажите свои ID) ===
 ADMIN_IDS = [964442694]  # ← ЗАМЕНИТЕ НА ВАШ ТЕЛЕГРАМ ID
 
-# === ТОКЕН ДЛЯ CRYPTOBOT ===
-CRYPTO_BOT_TOKEN = "563269:AA4Y8OUEyuY3qRFkDUIZXO5VBrC6lyh4j0M"
+# === РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ ===
+USDT_WALLET = "563269:AA4Y8OUEyuY3qRFkDUIZXO5VBrC6lyh4j0M"  # ← замените на свой USDT (TRC20) кошелёк
 
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
@@ -117,7 +117,6 @@ def set_welcome_photo_id(file_id):
         f.write(file_id)
 
 def is_admin(user_id):
-    # Проверка по списку ADMIN_IDS или по флагу из ключа
     if user_id in ADMIN_IDS:
         return True
     return users_data.get(user_id, {}).get("is_admin", False)
@@ -590,18 +589,41 @@ async def start_cmd(c: Client, m: Message):
     else:
         await m.reply(text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
+@bot.on_message(filters.command("sendkey") & filters.private)
+async def send_key_command(c: Client, m: Message):
+    """Администратор: /sendkey user_id описание дни (опционально)"""
+    if not is_admin(m.from_user.id):
+        await m.reply("⛔ Нет прав.")
+        return
+    args = m.text.split(maxsplit=3)
+    if len(args) < 3:
+        await m.reply("❌ Использование: `/sendkey USER_ID ОПИСАНИЕ ДНИ`\nПример: `/sendkey 123456789 Пробный 7`", parse_mode=enums.ParseMode.MARKDOWN)
+        return
+    try:
+        target_id = int(args[1])
+        desc = args[2]
+        days = int(args[3]) if len(args) > 3 else 30
+    except:
+        await m.reply("❌ Неверный формат. ID и дни должны быть числами.")
+        return
+    # Создаём ключ
+    new_key = generate_random_key()
+    keys = load_keys()
+    keys[new_key] = (desc, days, False)
+    save_keys(keys)
+    # Отправляем ключ пользователю
+    try:
+        await bot.send_message(target_id, f"🔑 Администратор отправил вам ключ:\n`{new_key}`\n\nИспользуйте кнопку «Активировать ключ» в профиле.")
+        await m.reply(f"✅ Ключ `{new_key}` отправлен пользователю {target_id}.\nОписание: {desc}\nДней: {days}")
+    except Exception as e:
+        await m.reply(f"❌ Не удалось отправить пользователю: {e}")
+
 @bot.on_message(filters.text & filters.private)
 async def handle_text(c: Client, m: Message):
     user_id = m.from_user.id
     text = m.text
 
     ensure_user_exists(user_id, m.from_user.username or m.from_user.first_name)
-
-    # Логируем текущий шаг для отладки
-    if user_id in temp_auth:
-        logger.info(f"Пользователь {user_id} в шаге: {temp_auth[user_id].get('step')}")
-    else:
-        logger.info(f"Пользователь {user_id} не в режиме ожидания ввода")
 
     if user_id in temp_auth and temp_auth[user_id].get("step") == "phone":
         await process_phone_input(c, m)
@@ -685,7 +707,6 @@ async def handle_text(c: Client, m: Message):
             await m.reply("❌ Введите число.")
         return
     if user_id in temp_auth and temp_auth[user_id].get("step") == "wait_key":
-        logger.info(f"Обработка ключа от пользователя {user_id}: {text[:30]}...")
         success, message = await activate_key(user_id, text.strip())
         await m.reply(message, reply_markup=get_main_keyboard(user_id))
         temp_auth.pop(user_id)
@@ -890,6 +911,43 @@ async def handle_callback(c: Client, query: CallbackQuery):
         temp_auth[user_id] = {"step": "wait_key"}
         await query.message.reply("🔑 Введите активационный ключ:")
         await query.answer()
+    elif data == "notify_admin_crypto":
+        sub_data = temp_auth.get(user_id, {})
+        price = sub_data.get("price", 0)
+        # Отправляем уведомление администратору
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    f"💸 *Новая заявка на оплату (крипта)*\n\n"
+                    f"Пользователь: [{user_id}](tg://user?id={user_id})\n"
+                    f"Сумма: ${price}\n"
+                    f"Тип: Криптовалюта (USDT)\n\n"
+                    f"После проверки оплаты отправьте ключ командой `/sendkey {user_id} Описание ДНИ`",
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+            except:
+                pass
+        await query.message.edit_text("✅ Сообщение отправлено администратору. Он свяжется с вами после проверки оплаты.", reply_markup=get_back_keyboard())
+        await query.answer()
+    elif data == "notify_admin_card":
+        sub_data = temp_auth.get(user_id, {})
+        price = sub_data.get("price", 0)
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    f"💳 *Новая заявка на оплату (карта)*\n\n"
+                    f"Пользователь: [{user_id}](tg://user?id={user_id})\n"
+                    f"Сумма: ${price}\n"
+                    f"Тип: Украинская карта\n\n"
+                    f"После проверки отправьте ключ командой `/sendkey {user_id} Описание ДНИ`",
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+            except:
+                pass
+        await query.message.edit_text("✅ Сообщение отправлено администратору. Он свяжется с вами после подтверждения оплаты.", reply_markup=get_back_keyboard())
+        await query.answer()
     else:
         await query.answer("⛔ Недоступно", show_alert=True)
 
@@ -923,38 +981,45 @@ async def pay_subscription(c, query):
 async def process_crypto_payment(query):
     user_id = query.from_user.id
     sub_data = temp_auth.get(user_id, {})
-    sub_type = sub_data.get("subscription", "month")
+    price = sub_data.get("price", 0)
     days = sub_data.get("days", 30)
+    sub_type = sub_data.get("subscription", "month")
 
-    # Создаём кнопку-ссылку на CryptoBot
-    crypto_url = f"https://t.me/CryptoBot?start=pay_{CRYPTO_BOT_TOKEN}"
     text = (
-        f"💎 *Оплата криптовалютой (USDT)*\n\n"
-        f"Сумма: ${sub_data['price']}\n"
-        f"Срок: {days} дней\n\n"
-        f"Нажмите на кнопку ниже, чтобы перейти в CryptoBot и оплатить:\n"
-        f"После оплаты вы получите ключ автоматически."
+        f"💸 *Оплата криптовалютой (USDT)*\n\n"
+        f"💰 Сумма: ${price}\n"
+        f"📅 Подписка: {sub_type.capitalize()} ({days} дней)\n\n"
+        f"📌 *Реквизиты для перевода:*\n"
+        f"`{USDT_WALLET}`\n\n"
+        f"Сеть: *TRC20*\n\n"
+        f"После выполнения перевода нажмите кнопку ниже, чтобы уведомить администратора."
     )
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💸 Перейти к оплате", url=crypto_url)],
+        [InlineKeyboardButton("📩 Отправить чек администратору", callback_data="notify_admin_crypto")],
         [InlineKeyboardButton("◀️ Назад", callback_data="shop")]
     ])
     await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
-    # Внимание: реальную проверку оплаты нужно делать через webhook CryptoBot.
-    # Для простоты здесь мы не реализуем автоматическую выдачу ключа.
-    # Рекомендуется выдать ключ вручную или настроить callback от CryptoBot.
-    # Пока просто показываем кнопку.
-    # Можно также сгенерировать ключ и отправить пользователю после оплаты (но проверку нужно делать отдельно).
-    # Для демонстрации я оставлю заглушку.
 
 async def process_card_payment(query):
+    user_id = query.from_user.id
+    sub_data = temp_auth.get(user_id, {})
+    price = sub_data.get("price", 0)
+    days = sub_data.get("days", 30)
+    sub_type = sub_data.get("subscription", "month")
+
     text = (
-        "💳 *Оплата украинской картой*\n\n"
-        "Для оплаты этим методом обратитесь к администратору:\n"
-        "👤 @its_neverka\n\n"
-        "После подтверждения оплаты вам будет выдан ключ доступа."
+        f"💳 *Оплата украинской картой*\n\n"
+        f"💰 Сумма: ${price}\n"
+        f"📅 Подписка: {sub_type.capitalize()} ({days} дней)\n\n"
+        f"Для оплаты этим методом обратитесь к администратору:\n"
+        f"👤 @its_neverka\n\n"
+        f"После оплаты нажмите кнопку ниже, чтобы уведомить администратора."
     )
-    await query.message.edit_text(text, parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_back_keyboard())
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📩 Я оплатил, уведомить", callback_data="notify_admin_card")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="shop")]
+    ])
+    await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
 
 async def show_profile(query: CallbackQuery):
     user_id = query.from_user.id
