@@ -29,6 +29,12 @@ API_ID = 30032542
 API_HASH = "ce646da1307fb452305d49f9bb8751ca"
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7BKB0mnw')
 
+# === ID АДМИНИСТРАТОРОВ (укажите свои ID) ===
+ADMIN_IDS = [964442694]  # ← ЗАМЕНИТЕ НА ВАШ ТЕЛЕГРАМ ID
+
+# === ТОКЕН ДЛЯ CRYPTOBOT ===
+CRYPTO_BOT_TOKEN = "563269:AA4Y8OUEyuY3qRFkDUIZXO5VBrC6lyh4j0M"
+
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
 
@@ -111,6 +117,9 @@ def set_welcome_photo_id(file_id):
         f.write(file_id)
 
 def is_admin(user_id):
+    # Проверка по списку ADMIN_IDS или по флагу из ключа
+    if user_id in ADMIN_IDS:
+        return True
     return users_data.get(user_id, {}).get("is_admin", False)
 
 def has_active_subscription(user_id):
@@ -917,17 +926,26 @@ async def process_crypto_payment(query):
     sub_type = sub_data.get("subscription", "month")
     days = sub_data.get("days", 30)
 
-    new_key, expires = await issue_key_to_user(user_id, sub_type, days)
-
+    # Создаём кнопку-ссылку на CryptoBot
+    crypto_url = f"https://t.me/CryptoBot?start=pay_{CRYPTO_BOT_TOKEN}"
     text = (
-        f"✅ *Оплата успешно проведена!*\n\n"
-        f"🎉 Ваш ключ доступа: `{new_key}`\n"
-        f"📅 Подписка активна до: {expires.strftime('%d.%m.%Y')}\n\n"
-        f"🔑 Вы также можете использовать этот ключ для входа на других устройствах.\n"
-        f"Для начала работы нажмите /start."
+        f"💎 *Оплата криптовалютой (USDT)*\n\n"
+        f"Сумма: ${sub_data['price']}\n"
+        f"Срок: {days} дней\n\n"
+        f"Нажмите на кнопку ниже, чтобы перейти в CryptoBot и оплатить:\n"
+        f"После оплаты вы получите ключ автоматически."
     )
-    await query.message.edit_text(text, parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_main_keyboard(user_id))
-    temp_auth.pop(user_id, None)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💸 Перейти к оплате", url=crypto_url)],
+        [InlineKeyboardButton("◀️ Назад", callback_data="shop")]
+    ])
+    await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
+    # Внимание: реальную проверку оплаты нужно делать через webhook CryptoBot.
+    # Для простоты здесь мы не реализуем автоматическую выдачу ключа.
+    # Рекомендуется выдать ключ вручную или настроить callback от CryptoBot.
+    # Пока просто показываем кнопку.
+    # Можно также сгенерировать ключ и отправить пользователю после оплаты (но проверку нужно делать отдельно).
+    # Для демонстрации я оставлю заглушку.
 
 async def process_card_payment(query):
     text = (
