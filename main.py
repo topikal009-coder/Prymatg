@@ -34,7 +34,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7
 ADMIN_IDS = [964442694]  # ← ЗАМЕНИТЕ НА ВАШ ТЕЛЕГРАМ ID
 
 # === РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ (карта/ручной перевод) ===
-USDT_WALLET = "563269:AA2NzVEuw3OYahJXkJHCBXMbgFnO9xw4wan"  # ← замените на свой USDT (TRC20) кошелёк
+USDT_WALLET = "571192:AAlRwpR38s9AmAiKGQdjL24KxinHAI8ls8Z"  # ← замените на свой USDT (TRC20) кошелёк
 
 # === НАСТРОЙКИ CRYPTOPAY ===
 CRYPTO_PAY_TOKEN = os.environ.get('CRYPTO_PAY_TOKEN', '')
