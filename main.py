@@ -32,7 +32,7 @@ API_HASH = "ce646da1307fb452305d49f9bb8751ca"
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7BKB0mnw')
 
 # === ФЛАГ: РАЗРЕШИТЬ ЗАПУСК РАССЫЛКИ ===
-SPAM_ENABLED = True  # ← меняем на True, чтобы включить рассылку
+SPAM_ENABLED = False   # ← поменять на True, чтобы включить рассылку
 
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
@@ -288,7 +288,6 @@ async def reconnect_account(user_id, phone):
 
 # --- РАССЫЛКА (ОБЫЧНАЯ И БЕЗОПАСНАЯ) ---
 async def spam_cycle(user_id, phone, data, message):
-    # Эта функция не будет вызываться, если SPAM_ENABLED = False
     status_msg = None
     if message:
         status_msg = await message.reply(f"🚀 Запуск рассылки для {phone}...")
@@ -365,7 +364,6 @@ async def spam_cycle(user_id, phone, data, message):
     logger.info(f"Рассылка {phone} остановлена")
 
 async def safe_spam_cycle(user_id, phone, data, message):
-    # Эта функция не будет вызываться, если SPAM_ENABLED = False
     status_msg = None
     if message:
         status_msg = await message.reply(f"🛡 Запуск безопасной рассылки для {phone}...")
@@ -1073,7 +1071,7 @@ async def handle_photo(c, m):
         await m.reply("Используйте кнопки меню.")
 
 # ========== ГРАЦИОЗНОЕ ЗАВЕРШЕНИЕ ==========
-async def shutdown(sig=None):
+async def shutdown(stop_event: asyncio.Event):
     logger.info("🛑 Останавливаю бота...")
     for task in keep_alive_tasks.values():
         task.cancel()
@@ -1088,8 +1086,9 @@ async def shutdown(sig=None):
                 except:
                     pass
     await bot.stop()
+    stop_event.set()
 
-async def main():
+async def main(stop_event: asyncio.Event):
     load_users()
     logger.info("🚀 Запуск бота...")
     if IS_RAILWAY:
@@ -1102,14 +1101,19 @@ async def main():
         except Exception as e:
             logger.error(f"❌ Volume НЕ доступен: {e}")
     await load_user_sessions()
+    await bot.start()
     logger.info("🤖 Бот запущен")
-    await bot.run()
+    await stop_event.wait()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    stop_event = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(sig)))
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(stop_event)))
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main(stop_event))
     except KeyboardInterrupt:
-        loop.run_until_complete(shutdown())
+        loop.run_until_complete(shutdown(stop_event))
+    finally:
+        loop.close()
