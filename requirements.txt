@@ -1,5 +1,4 @@
-pyrogram 
-asyncio
-aiogram
-python-dotenv
-requests
+pyrogram>=2.0.0
+tgcrypto>=1.2.3
+aiohttp>=3.8.0
+python-dotenv>=1.0.0
