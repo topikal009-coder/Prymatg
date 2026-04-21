@@ -32,7 +32,7 @@ API_HASH = "ce646da1307fb452305d49f9bb8751ca"
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7BKB0mnw')
 
 # === ФЛАГ: РАЗРЕШИТЬ ЗАПУСК РАССЫЛКИ ===
-SPAM_ENABLED = False   # ← поменять на True, чтобы включить рассылку
+SPAM_ENABLED = True   # ← поменять на True, чтобы включить рассылку
 
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
