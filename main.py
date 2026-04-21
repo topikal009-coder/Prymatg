@@ -506,6 +506,22 @@ def get_admin_panel_keyboard():
 def get_back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]])
 
+# ========== ФУНКЦИЯ ОТПРАВКИ ГЛАВНОГО МЕНЮ ==========
+async def send_main_menu(target, user_id, text=None):
+    """Отправляет главное меню с фото или без в зависимости от наличия активных рассылок"""
+    if text is None:
+        if user_id in users_data:
+            text = "✨ *Главное меню*"
+        else:
+            text = "✨ *Добро пожаловать!* Приобретите подписку в магазине или активируйте ключ."
+    has_running = user_id in users_data and any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
+    photo_id = None if has_running else get_welcome_photo_id()
+    
+    if photo_id and user_id in users_data:
+        await target.reply_photo(photo_id, caption=text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+    else:
+        await target.reply(text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+
 # ========== ФУНКЦИЯ АВТОВЫДАЧИ КЛЮЧА ПОСЛЕ ОПЛАТЫ ==========
 async def issue_key_to_user(user_id, subscription_type, days):
     new_key = generate_random_key()
@@ -572,22 +588,7 @@ async def start_cmd(c: Client, m: Message):
     user_id = m.from_user.id
     username = m.from_user.username or m.from_user.first_name
     ensure_user_exists(user_id, username)
-
-    has_running = any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
-    photo_id = None if has_running else get_welcome_photo_id()
-
-    text = (
-        f"✨ *Добро пожаловать в NeverkaBOT, {username}!* ✨\n\n"
-        f"🤖 Я помогу вам автоматизировать рассылку сообщений в группы.\n"
-        f"📱 Добавляйте аккаунты, настраивайте текст и интервал.\n"
-        f"🛡 *Безопасный режим* — рандомный текст и интервал 55-70 мин.\n"
-        f"💰 *Запуск рассылки доступен только по подписке* — приобретите её в магазине или активируйте ключ в профиле.\n\n"
-        f"👇 Используйте кнопки ниже для управления."
-    )
-    if photo_id:
-        await m.reply_photo(photo_id, caption=text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
-    else:
-        await m.reply(text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+    await send_main_menu(m, user_id)
 
 @bot.on_message(filters.command("sendkey") & filters.private)
 async def send_key_command(c: Client, m: Message):
@@ -606,12 +607,10 @@ async def send_key_command(c: Client, m: Message):
     except:
         await m.reply("❌ Неверный формат. ID и дни должны быть числами.")
         return
-    # Создаём ключ
     new_key = generate_random_key()
     keys = load_keys()
     keys[new_key] = (desc, days, False)
     save_keys(keys)
-    # Отправляем ключ пользователю
     try:
         await bot.send_message(target_id, f"🔑 Администратор отправил вам ключ:\n`{new_key}`\n\nИспользуйте кнопку «Активировать ключ» в профиле.")
         await m.reply(f"✅ Ключ `{new_key}` отправлен пользователю {target_id}.\nОписание: {desc}\nДней: {days}")
@@ -639,7 +638,7 @@ async def handle_text(c: Client, m: Message):
         for acc in users_data[user_id]["accounts"].values():
             acc["text"] = new_text
         save_users()
-        await m.reply("✅ Текст рассылки обновлён для всех аккаунтов.", reply_markup=get_main_keyboard(user_id))
+        await send_main_menu(m, user_id, "✅ Текст рассылки обновлён для всех аккаунтов.")
         temp_auth.pop(user_id)
         return
     if user_id in temp_auth and temp_auth[user_id].get("step") == "change_interval":
@@ -651,7 +650,7 @@ async def handle_text(c: Client, m: Message):
             for acc in users_data[user_id]["accounts"].values():
                 acc["interval"] = interval
             save_users()
-            await m.reply(f"✅ Интервал установлен: {interval} сек.", reply_markup=get_main_keyboard(user_id))
+            await send_main_menu(m, user_id, f"✅ Интервал установлен: {interval} сек.")
             temp_auth.pop(user_id)
         except ValueError:
             await m.reply("❌ Введите целое число секунд.")
@@ -701,14 +700,16 @@ async def handle_text(c: Client, m: Message):
                         acc["running"] = False
             save_users()
             if has_active_subscription(user_id):
-                await m.reply(f"🛡 Безопасная рассылка запущена для {len(accounts)} аккаунтов.", reply_markup=get_main_keyboard(user_id))
+                await send_main_menu(m, user_id, f"🛡 Безопасная рассылка запущена для {len(accounts)} аккаунтов.")
+            else:
+                await send_main_menu(m, user_id, "❌ Не удалось запустить рассылку: нет активной подписки.")
             temp_auth.pop(user_id)
         except ValueError:
             await m.reply("❌ Введите число.")
         return
     if user_id in temp_auth and temp_auth[user_id].get("step") == "wait_key":
         success, message = await activate_key(user_id, text.strip())
-        await m.reply(message, reply_markup=get_main_keyboard(user_id))
+        await send_main_menu(m, user_id, message)
         temp_auth.pop(user_id)
         return
     if user_id in temp_auth and temp_auth[user_id].get("step") == "create_key_days":
@@ -743,7 +744,8 @@ async def handle_text(c: Client, m: Message):
         temp_auth.pop(user_id)
         return
 
-    await m.reply("Используйте кнопки меню.", reply_markup=get_main_keyboard(user_id))
+    # Если ничего не подошло – показываем главное меню
+    await send_main_menu(m, user_id)
 
 async def process_phone_input(c, m):
     user_id = m.from_user.id
@@ -820,7 +822,7 @@ async def finalize_account(uid, data, m):
         "base_interval": 3600
     }
     save_users()
-    await m.reply(f"✅ Аккаунт {phone} успешно добавлен!", reply_markup=get_main_keyboard(user_id))
+    await send_main_menu(m, user_id, f"✅ Аккаунт {phone} успешно добавлен!")
     temp_auth.pop(uid, None)
 
 @bot.on_callback_query()
@@ -850,7 +852,7 @@ async def handle_callback(c: Client, query: CallbackQuery):
     elif data == "payment_card":
         await process_card_payment(query)
     elif data == "cancel_payment":
-        await query.message.edit_text("❌ Платёж отменён.", reply_markup=get_shop_keyboard())
+        await send_main_menu(query.message, user_id, "❌ Платёж отменён.")
     elif data == "profile":
         await show_profile(query)
     elif data == "info":
@@ -892,14 +894,7 @@ async def handle_callback(c: Client, query: CallbackQuery):
         await query.message.reply("📸 Отправьте новое приветственное фото (как обычное изображение).")
         await query.answer()
     elif data == "back_to_main":
-        has_running = user_id in users_data and any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
-        photo_id = None if has_running else get_welcome_photo_id()
-        text = "✨ *Главное меню*" if user_id in users_data else "✨ *Добро пожаловать!* Приобретите подписку в магазине или активируйте ключ."
-        if photo_id and user_id in users_data:
-            await query.message.delete()
-            await query.message.reply_photo(photo_id, caption=text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
-        else:
-            await query.message.edit_text(text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
+        await send_main_menu(query.message, user_id)
     elif data == "add_account":
         if len(users_data[user_id]["accounts"]) >= MAX_ACCOUNTS_PER_USER:
             await query.answer(f"❌ Лимит {MAX_ACCOUNTS_PER_USER} аккаунтов", show_alert=True)
@@ -914,7 +909,6 @@ async def handle_callback(c: Client, query: CallbackQuery):
     elif data == "notify_admin_crypto":
         sub_data = temp_auth.get(user_id, {})
         price = sub_data.get("price", 0)
-        # Отправляем уведомление администратору
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(
@@ -928,7 +922,7 @@ async def handle_callback(c: Client, query: CallbackQuery):
                 )
             except:
                 pass
-        await query.message.edit_text("✅ Сообщение отправлено администратору. Он свяжется с вами после проверки оплаты.", reply_markup=get_back_keyboard())
+        await send_main_menu(query.message, user_id, "✅ Сообщение отправлено администратору. Он свяжется с вами после проверки оплаты.")
         await query.answer()
     elif data == "notify_admin_card":
         sub_data = temp_auth.get(user_id, {})
@@ -946,7 +940,7 @@ async def handle_callback(c: Client, query: CallbackQuery):
                 )
             except:
                 pass
-        await query.message.edit_text("✅ Сообщение отправлено администратору. Он свяжется с вами после подтверждения оплаты.", reply_markup=get_back_keyboard())
+        await send_main_menu(query.message, user_id, "✅ Сообщение отправлено администратору. Он свяжется с вами после подтверждения оплаты.")
         await query.answer()
     else:
         await query.answer("⛔ Недоступно", show_alert=True)
@@ -1096,7 +1090,7 @@ async def start_normal_ras(query: CallbackQuery):
                 asyncio.create_task(spam_cycle(user_id, phone, acc, query.message))
                 started += 1
     save_users()
-    await query.message.reply(f"🚀 Запущено обычных рассылок: {started}", reply_markup=get_main_keyboard(user_id))
+    await send_main_menu(query.message, user_id, f"🚀 Запущено обычных рассылок: {started}")
     await query.answer()
 
 async def start_safe_mode(query: CallbackQuery):
@@ -1132,7 +1126,7 @@ async def stop_all_ras(query: CallbackQuery):
             acc["running"] = False
             stopped += 1
     save_users()
-    await query.message.reply(f"🛑 Остановлено рассылок: {stopped}", reply_markup=get_main_keyboard(user_id))
+    await send_main_menu(query.message, user_id, f"🛑 Остановлено рассылок: {stopped}")
     await query.answer()
 
 async def list_all_users(query: CallbackQuery):
@@ -1208,10 +1202,10 @@ async def handle_photo(c, m):
     if user_id in temp_auth and temp_auth[user_id].get("step") == "wait_photo" and is_admin(user_id):
         file_id = m.photo.file_id
         set_welcome_photo_id(file_id)
-        await m.reply("✅ Приветственное фото обновлено!", reply_markup=get_main_keyboard(user_id))
+        await send_main_menu(m, user_id, "✅ Приветственное фото обновлено!")
         temp_auth.pop(user_id)
     else:
-        await m.reply("Используйте кнопки меню.")
+        await send_main_menu(m, user_id)
 
 # ========== ГРАЦИОЗНОЕ ЗАВЕРШЕНИЕ ==========
 async def shutdown():
