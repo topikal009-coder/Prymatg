@@ -511,7 +511,6 @@ async def send_main_menu(target, user_id, text=None):
     """Отправляет главное меню с фото или без в зависимости от наличия активных рассылок"""
     if text is None:
         if user_id in users_data:
-            text = "✨ *Главное меню*"
         else:
             text = "✨ *Добро пожаловать!* Приобретите подписку в магазине или активируйте ключ."
     has_running = user_id in users_data and any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
