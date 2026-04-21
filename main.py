@@ -29,9 +29,6 @@ API_ID = 30032542
 API_HASH = "ce646da1307fb452305d49f9bb8751ca"
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7BKB0mnw')
 
-# === ФЛАГ: РАЗРЕШИТЬ ЗАПУСК РАССЫЛКИ ===
-SPAM_ENABLED = True   # ← поменять на True, чтобы включить рассылку
-
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
 
@@ -124,6 +121,20 @@ def has_active_subscription(user_id):
         expires = datetime.fromisoformat(expires)
     return expires > datetime.now()
 
+def ensure_user_exists(user_id, username=""):
+    """Создаёт пользователя с истекшей подпиской, если его нет"""
+    if user_id not in users_data:
+        users_data[user_id] = {
+            "expires": (datetime.now() - timedelta(days=1)).isoformat(),
+            "key_used": None,
+            "is_admin": False,
+            "username": username,
+            "bound_username": "",
+            "accounts": {}
+        }
+        save_users()
+        logger.info(f"Создан новый пользователь {user_id} (без подписки)")
+
 def save_users():
     try:
         users_to_save = {}
@@ -168,27 +179,26 @@ def load_users():
                 expires = data["expires"]
                 if isinstance(expires, str):
                     expires = datetime.fromisoformat(expires)
-                if expires > datetime.now():
-                    accounts = {}
-                    for phone, acc_data in data.get("accounts", {}).items():
-                        accounts[phone] = {
-                            "text": acc_data["text"],
-                            "interval": acc_data["interval"],
-                            "running": False,
-                            "added_date": datetime.fromisoformat(acc_data["added_date"]) if isinstance(acc_data.get("added_date"), str) else datetime.now(),
-                            "session_name": acc_data.get("session_name", os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{uid}")),
-                            "safe_mode": acc_data.get("safe_mode", False),
-                            "texts_list": acc_data.get("texts_list", []),
-                            "base_interval": acc_data.get("base_interval", 3600)
-                        }
-                    users_data[uid] = {
-                        "expires": expires,
-                        "key_used": data["key_used"],
-                        "is_admin": data["is_admin"],
-                        "username": data.get("username", ""),
-                        "bound_username": data.get("bound_username", ""),
-                        "accounts": accounts
+                accounts = {}
+                for phone, acc_data in data.get("accounts", {}).items():
+                    accounts[phone] = {
+                        "text": acc_data["text"],
+                        "interval": acc_data["interval"],
+                        "running": False,
+                        "added_date": datetime.fromisoformat(acc_data["added_date"]) if isinstance(acc_data.get("added_date"), str) else datetime.now(),
+                        "session_name": acc_data.get("session_name", os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{uid}")),
+                        "safe_mode": acc_data.get("safe_mode", False),
+                        "texts_list": acc_data.get("texts_list", []),
+                        "base_interval": acc_data.get("base_interval", 3600)
                     }
+                users_data[uid] = {
+                    "expires": expires,
+                    "key_used": data["key_used"],
+                    "is_admin": data["is_admin"],
+                    "username": data.get("username", ""),
+                    "bound_username": data.get("bound_username", ""),
+                    "accounts": accounts
+                }
             logger.info(f"Загружено {len(users_data)} пользователей")
     except Exception as e:
         logger.error(f"Ошибка загрузки: {e}")
@@ -487,7 +497,7 @@ def get_admin_panel_keyboard():
 def get_back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]])
 
-# ========== ФУНКЦИЯ АВТОВЫДАЧИ КЛЮЧА ==========
+# ========== ФУНКЦИЯ АВТОВЫДАЧИ КЛЮЧА ПОСЛЕ ОПЛАТЫ ==========
 async def issue_key_to_user(user_id, subscription_type, days):
     new_key = generate_random_key()
     current_keys = load_keys()
@@ -502,42 +512,20 @@ async def issue_key_to_user(user_id, subscription_type, days):
     current_keys[new_key] = (desc, days, False)
     save_keys(current_keys)
 
-    if user_id in users_data:
-        old_expires = datetime.fromisoformat(users_data[user_id]["expires"])
-        new_expires = max(old_expires, datetime.now()) + timedelta(days=days)
-        users_data[user_id]["expires"] = new_expires.isoformat()
-        users_data[user_id]["key_used"] = new_key
-        save_users()
-        return new_key, new_expires
-    else:
-        expires = datetime.now() + timedelta(days=days)
-        users_data[user_id] = {
-            "expires": expires.isoformat(),
-            "key_used": new_key,
-            "is_admin": False,
-            "username": "",
-            "bound_username": "",
-            "accounts": {}
-        }
-        save_users()
-        return new_key, expires
+    ensure_user_exists(user_id)  # гарантируем, что пользователь есть
+    old_expires = datetime.fromisoformat(users_data[user_id]["expires"])
+    new_expires = max(old_expires, datetime.now()) + timedelta(days=days)
+    users_data[user_id]["expires"] = new_expires.isoformat()
+    users_data[user_id]["key_used"] = new_key
+    save_users()
+    return new_key, new_expires
 
 # ========== ОБРАБОТЧИКИ ==========
 @bot.on_message(filters.command("start"))
 async def start_cmd(c: Client, m: Message):
     user_id = m.from_user.id
     username = m.from_user.username or m.from_user.first_name
-
-    if user_id not in users_data:
-        await m.reply(
-            f"✨ *Добро пожаловать в NeverkaBOT, {username}!* ✨\n\n"
-            f"🤖 У вас пока нет активной подписки.\n"
-            f"🛍 Нажмите кнопку «Магазин», чтобы приобрести доступ.\n\n"
-            f"👇 Используйте кнопки ниже.",
-            reply_markup=get_main_keyboard(user_id),
-            parse_mode=enums.ParseMode.MARKDOWN
-        )
-        return
+    ensure_user_exists(user_id, username)
 
     has_running = any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
     photo_id = None if has_running else get_welcome_photo_id()
@@ -546,8 +534,8 @@ async def start_cmd(c: Client, m: Message):
         f"✨ *Добро пожаловать в NeverkaBOT, {username}!* ✨\n\n"
         f"🤖 Я помогу вам автоматизировать рассылку сообщений в группы.\n"
         f"📱 Добавляйте аккаунты, настраивайте текст и интервал.\n"
-        f"⚡️ *Доступ к рассылке* — только по активной подписке.\n"
-        f"🛡 *Безопасный режим* — рандомный текст и интервал 55-70 мин.\n\n"
+        f"🛡 *Безопасный режим* — рандомный текст и интервал 55-70 мин.\n"
+        f"💰 *Запуск рассылки доступен только по подписке* — приобретите её в магазине.\n\n"
         f"👇 Используйте кнопки ниже для управления."
     )
     if photo_id:
@@ -560,9 +548,8 @@ async def handle_text(c: Client, m: Message):
     user_id = m.from_user.id
     text = m.text
 
-    if user_id not in users_data:
-        await m.reply("🔐 У вас нет подписки. Пожалуйста, приобретите её в магазине.", reply_markup=get_main_keyboard(user_id))
-        return
+    # Автоматически создаём пользователя, если его нет
+    ensure_user_exists(user_id, m.from_user.username or m.from_user.first_name)
 
     if user_id in temp_auth and temp_auth[user_id].get("step") == "phone":
         await process_phone_input(c, m)
@@ -633,13 +620,14 @@ async def handle_text(c: Client, m: Message):
                     await asyncio.sleep(2)
                 if "client" in acc:
                     acc["running"] = True
-                    if SPAM_ENABLED:
+                    # Запуск разрешён только при активной подписке
+                    if has_active_subscription(user_id):
                         asyncio.create_task(safe_spam_cycle(user_id, phone, acc, m))
                     else:
-                        await m.reply("⛔ Запуск рассылки временно отключён администратором.")
+                        await m.reply("❌ Для запуска рассылки необходима активная подписка! Приобретите её в магазине.")
                         acc["running"] = False
             save_users()
-            if SPAM_ENABLED:
+            if has_active_subscription(user_id):
                 await m.reply(f"🛡 Безопасная рассылка запущена для {len(accounts)} аккаунтов.", reply_markup=get_main_keyboard(user_id))
             temp_auth.pop(user_id)
         except ValueError:
@@ -731,9 +719,9 @@ async def handle_callback(c: Client, query: CallbackQuery):
     user_id = query.from_user.id
     data = query.data
 
-    if user_id not in users_data and data not in ["shop", "back_to_main", "sub_week", "sub_month", "sub_year", "sub_forever", "payment_crypto", "payment_card", "cancel_payment"]:
-        await query.answer("❌ У вас нет подписки. Приобретите её в магазине.", show_alert=True)
-        return
+    # Автоматически создаём пользователя, если его нет (кроме случаев, когда не нужно)
+    if user_id not in users_data and data not in ["sub_week", "sub_month", "sub_year", "sub_forever", "payment_crypto", "payment_card"]:
+        ensure_user_exists(user_id, query.from_user.username or query.from_user.first_name)
 
     if data == "shop":
         await query.message.edit_text(
@@ -862,9 +850,7 @@ async def process_card_payment(query):
 
 async def show_profile(query: CallbackQuery):
     user_id = query.from_user.id
-    if user_id not in users_data:
-        await query.answer("❌ Сначала приобретите подписку в магазине", show_alert=True)
-        return
+    ensure_user_exists(user_id, query.from_user.username or query.from_user.first_name)
     data = users_data[user_id]
     accounts = data["accounts"]
     total = len(accounts)
@@ -877,10 +863,13 @@ async def show_profile(query: CallbackQuery):
         text += f"🔗 Привязан к: @{data['bound_username']}\n"
     text += f"📱 Аккаунтов: {total}/{MAX_ACCOUNTS_PER_USER}\n"
     text += f"🟢 Активных рассылок: {running}\n"
-    text += f"📅 Подписка до: {datetime.fromisoformat(data['expires']).strftime('%d.%m.%Y')}\n\n"
+    if has_active_subscription(user_id):
+        text += f"📅 Подписка активна до: {datetime.fromisoformat(data['expires']).strftime('%d.%m.%Y')}\n"
+    else:
+        text += f"❌ *Подписка отсутствует* — для запуска рассылки необходимо её приобрести.\n"
 
     if accounts:
-        text += "📋 *Список аккаунтов*:\n"
+        text += "\n📋 *Список аккаунтов*:\n"
         for i, (phone, acc) in enumerate(accounts.items(), 1):
             status = "🟢 Активен" if acc.get("running", False) else "🔴 Остановлен"
             client_ok = "✅" if "client" in acc else "❌"
@@ -889,7 +878,7 @@ async def show_profile(query: CallbackQuery):
             text += f"   Текст: {acc['text'][:40]}...\n"
             text += f"   Интервал: {acc['interval']} сек.\n"
     else:
-        text += "📭 Нет добавленных аккаунтов.\n"
+        text += "\n📭 Нет добавленных аккаунтов.\n"
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")],
@@ -906,18 +895,16 @@ async def show_info(query: CallbackQuery):
         "• Настройка текста и интервала рассылки\n"
         "• Безопасный режим с рандомными текстами и интервалом 55-70 мин\n"
         "• Управление подпиской через магазин\n\n"
+        "💰 *Для запуска рассылки требуется активная подписка.*\n"
         "📞 **Поддержка:** @its_neverka\n\n"
         "© 2026 NeverkaBOT"
     )
     await query.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode=enums.ParseMode.MARKDOWN)
 
 async def start_normal_ras(query: CallbackQuery):
-    if not SPAM_ENABLED:
-        await query.answer("⛔ Запуск рассылки временно отключён администратором.", show_alert=True)
-        return
     user_id = query.from_user.id
     if not has_active_subscription(user_id):
-        await query.answer("❌ Ваша подписка истекла! Продлите в магазине.", show_alert=True)
+        await query.answer("❌ Для запуска рассылки необходима активная подписка! Приобретите её в магазине.", show_alert=True)
         return
     accounts = users_data[user_id]["accounts"]
     if not accounts:
@@ -939,12 +926,9 @@ async def start_normal_ras(query: CallbackQuery):
     await query.answer()
 
 async def start_safe_mode(query: CallbackQuery):
-    if not SPAM_ENABLED:
-        await query.answer("⛔ Запуск рассылки временно отключён администратором.", show_alert=True)
-        return
     user_id = query.from_user.id
     if not has_active_subscription(user_id):
-        await query.answer("❌ Подписка истекла!", show_alert=True)
+        await query.answer("❌ Для запуска рассылки необходима активная подписка! Приобретите её в магазине.", show_alert=True)
         return
     accounts = users_data[user_id]["accounts"]
     if not accounts:
@@ -988,7 +972,7 @@ async def list_all_users(query: CallbackQuery):
         bound = f" (привязан @{data['bound_username']})" if data.get('bound_username') else ""
         text += f"🆔 `{uid}` {bound}\n"
         text += f"👤 {data.get('username', 'нет юзернейма')}\n"
-        text += f"📱 Акков: {acc_count} | Доступ до: {expires.strftime('%d.%m.%Y')}\n"
+        text += f"📱 Акков: {acc_count} | Подписка до: {expires.strftime('%d.%m.%Y')}\n"
         text += f"🔑 Ключ: `{data['key_used']}`\n\n"
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
@@ -1088,7 +1072,7 @@ async def main():
     await load_user_sessions()
     await bot.start()
     logger.info("🤖 Бот запущен и готов к работе")
-    await idle()  # Ожидание до остановки
+    await idle()
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
