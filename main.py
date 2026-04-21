@@ -16,6 +16,7 @@ from pyrogram.errors import (
 )
 from pyrogram.handlers import DisconnectHandler
 import logging
+import aiohttp  # для CryptoPay
 
 # Настройка логирования
 logging.basicConfig(
@@ -32,8 +33,12 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7
 # === ID АДМИНИСТРАТОРОВ (укажите свои ID) ===
 ADMIN_IDS = [964442694]  # ← ЗАМЕНИТЕ НА ВАШ ТЕЛЕГРАМ ID
 
-# === РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ ===
+# === РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ (карта/ручной перевод) ===
 USDT_WALLET = "563269:AA4Y8OUEyuY3qRFkDUIZXO5VBrC6lyh4j0M"  # ← замените на свой USDT (TRC20) кошелёк
+
+# === НАСТРОЙКИ CRYPTOPAY ===
+CRYPTO_PAY_TOKEN = os.environ.get('CRYPTO_PAY_TOKEN', '')
+CRYPTO_PAY_TESTNET = os.environ.get('CRYPTO_PAY_TESTNET', 'False').lower() == 'true'
 
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
@@ -53,6 +58,37 @@ os.makedirs(bot_session_dir, exist_ok=True)
 
 logger.info(f"📁 Рабочая директория: {WORK_DIR}")
 logger.info(f"📁 На Railway: {IS_RAILWAY}")
+
+# === КЛАСС ДЛЯ РАБОТЫ С CRYPTOPAY ===
+class CryptoPayClient:
+    def __init__(self, api_token: str, testnet=False):
+        self.token = api_token
+        self.url = "https://testnet-pay.crypt.bot/api" if testnet else "https://pay.crypt.bot/api"
+    
+    async def _req(self, method: str, params=None):
+        async with aiohttp.ClientSession() as sess:
+            async with sess.post(f"{self.url}/{method}", 
+                                 headers={"Crypto-Pay-API-Token": self.token, "Content-Type": "application/json"},
+                                 json=params or {}) as resp:
+                data = await resp.json()
+                if not data.get("ok"):
+                    raise Exception(data.get("error", "Unknown error"))
+                return data["result"]
+    
+    async def create_invoice(self, asset: str, amount: str, desc=None, payload=None, expires=1800):
+        p = {"asset": asset, "amount": str(amount), "expires_in": expires}
+        if desc: p["description"] = desc
+        if payload: p["payload"] = payload
+        return await self._req("createInvoice", p)
+    
+    async def get_invoices(self, ids: list):
+        if not ids: return {"items": []}
+        return await self._req("getInvoices", {"invoice_ids": ",".join(map(str, ids))})
+
+# Инициализация CryptoPay (если токен задан)
+crypto = CryptoPayClient(CRYPTO_PAY_TOKEN, testnet=CRYPTO_PAY_TESTNET) if CRYPTO_PAY_TOKEN else None
+if not crypto:
+    logger.warning("⚠️ CryptoPay не настроен. Автоматическая оплата через USDT недоступна.")
 
 # === НАСТРОЙКА КЛЮЧЕЙ ===
 KEYS_FILE = os.path.join(WORK_DIR, 'activation_keys.json')
@@ -511,6 +547,7 @@ async def send_main_menu(target, user_id, text=None):
     """Отправляет главное меню с фото или без в зависимости от наличия активных рассылок"""
     if text is None:
         if user_id in users_data:
+            text = "✨ *Главное меню*"
         else:
             text = "✨ *Добро пожаловать!* Приобретите подписку в магазине или активируйте ключ."
     has_running = user_id in users_data and any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
@@ -521,7 +558,7 @@ async def send_main_menu(target, user_id, text=None):
     else:
         await target.reply(text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
-# ========== ФУНКЦИЯ АВТОВЫДАЧИ КЛЮЧА ПОСЛЕ ОПЛАТЫ ==========
+# ========== ФУНКЦИЯ АВТОВЫДАЧИ КЛЮЧА ПОСЛЕ ОПЛАТЫ (если нужно) ==========
 async def issue_key_to_user(user_id, subscription_type, days):
     new_key = generate_random_key()
     current_keys = load_keys()
@@ -905,42 +942,8 @@ async def handle_callback(c: Client, query: CallbackQuery):
         temp_auth[user_id] = {"step": "wait_key"}
         await query.message.reply("🔑 Введите активационный ключ:")
         await query.answer()
-    elif data == "notify_admin_crypto":
-        sub_data = temp_auth.get(user_id, {})
-        price = sub_data.get("price", 0)
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    admin_id,
-                    f"💸 *Новая заявка на оплату (крипта)*\n\n"
-                    f"Пользователь: [{user_id}](tg://user?id={user_id})\n"
-                    f"Сумма: ${price}\n"
-                    f"Тип: Криптовалюта (USDT)\n\n"
-                    f"После проверки оплаты отправьте ключ командой `/sendkey {user_id} Описание ДНИ`",
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except:
-                pass
-        await send_main_menu(query.message, user_id, "✅ Сообщение отправлено администратору. Он свяжется с вами после проверки оплаты.")
-        await query.answer()
-    elif data == "notify_admin_card":
-        sub_data = temp_auth.get(user_id, {})
-        price = sub_data.get("price", 0)
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    admin_id,
-                    f"💳 *Новая заявка на оплату (карта)*\n\n"
-                    f"Пользователь: [{user_id}](tg://user?id={user_id})\n"
-                    f"Сумма: ${price}\n"
-                    f"Тип: Украинская карта\n\n"
-                    f"После проверки отправьте ключ командой `/sendkey {user_id} Описание ДНИ`",
-                    parse_mode=enums.ParseMode.MARKDOWN
-                )
-            except:
-                pass
-        await send_main_menu(query.message, user_id, "✅ Сообщение отправлено администратору. Он свяжется с вами после подтверждения оплаты.")
-        await query.answer()
+    elif data.startswith("check_payment_"):
+        await check_payment(query)
     else:
         await query.answer("⛔ Недоступно", show_alert=True)
 
@@ -971,29 +974,124 @@ async def pay_subscription(c, query):
     ])
     await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
 
-async def process_crypto_payment(query):
+# ========== НОВАЯ ОБРАБОТКА КРИПТОПЛАТЕЖЕЙ С CRYPTOPAY ==========
+async def process_crypto_payment(query: CallbackQuery):
     user_id = query.from_user.id
     sub_data = temp_auth.get(user_id, {})
+    if not sub_data:
+        await query.answer("Ошибка, попробуйте снова", show_alert=True)
+        return
+
     price = sub_data.get("price", 0)
     days = sub_data.get("days", 30)
     sub_type = sub_data.get("subscription", "month")
 
-    text = (
-        f"💸 *Оплата криптовалютой (USDT)*\n\n"
-        f"💰 Сумма: ${price}\n"
-        f"📅 Подписка: {sub_type.capitalize()} ({days} дней)\n\n"
-        f"📌 *Реквизиты для перевода:*\n"
-        f"`{USDT_WALLET}`\n\n"
-        f"Сеть: *TRC20*\n\n"
-        f"После выполнения перевода нажмите кнопку ниже, чтобы уведомить администратора."
-    )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📩 Отправить чек администратору", callback_data="notify_admin_crypto")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="shop")]
-    ])
-    await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
+    if not crypto:
+        await query.message.edit_text("❌ Оплата криптовалютой временно недоступна. Обратитесь к администратору.")
+        return
 
-async def process_card_payment(query):
+    try:
+        inv = await crypto.create_invoice(
+            "USDT", f"{price:.2f}",
+            desc=f"Подписка {sub_type} на {days} дней",
+            payload=f"sub_{sub_type}_{user_id}_{int(datetime.now().timestamp())}",
+            expires=1800
+        )
+        invoice_id = inv["invoice_id"]
+        url = inv.get("bot_invoice_url")
+        if not url:
+            raise ValueError("CryptoPay не вернул ссылку")
+
+        temp_auth[user_id]["invoice_id"] = invoice_id
+        temp_auth[user_id]["payment_step"] = "awaiting_payment"
+
+        text = (
+            f"💸 *Оплата через CryptoPay (USDT)*\n\n"
+            f"💰 Сумма: ${price:.2f}\n"
+            f"📅 Подписка: {sub_type.capitalize()} ({days} дней)\n\n"
+            f"👉 [Оплатить через бота CryptoPay]({url})\n\n"
+            f"После оплаты нажмите кнопку «✅ Проверить оплату»."
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Перейти к оплате", url=url)],
+            [InlineKeyboardButton("✅ Проверить оплату", callback_data=f"check_payment_{invoice_id}")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="shop")]
+        ])
+        await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
+
+    except Exception as e:
+        logger.error(f"CryptoPay error: {e}")
+        await query.message.edit_text(f"❌ Ошибка создания счёта: {e}\nПопробуйте позже или выберите другой способ оплаты.")
+
+async def check_payment(query: CallbackQuery):
+    user_id = query.from_user.id
+    invoice_id = int(query.data.split("_")[2])
+    sub_data = temp_auth.get(user_id, {})
+    
+    if sub_data.get("invoice_id") != invoice_id:
+        await query.answer("❌ Сессия оплаты не найдена или устарела", show_alert=True)
+        return
+
+    if not crypto:
+        await query.answer("❌ CryptoPay не настроен", show_alert=True)
+        return
+
+    try:
+        res = await crypto.get_invoices([invoice_id])
+        if res and res.get('items'):
+            inv = res['items'][0]
+            if inv.get('status') == 'paid':
+                # Оплата подтверждена – активируем подписку
+                sub_type = sub_data.get("subscription")
+                days = sub_data.get("days")
+                price = sub_data.get("price")
+
+                ensure_user_exists(user_id)
+                old_expires = datetime.fromisoformat(users_data[user_id]["expires"])
+                new_expires = max(old_expires, datetime.now()) + timedelta(days=days)
+                users_data[user_id]["expires"] = new_expires.isoformat()
+                # Сохраняем информацию о платеже
+                if "payments" not in users_data[user_id]:
+                    users_data[user_id]["payments"] = []
+                users_data[user_id]["payments"].append({
+                    "date": datetime.now().isoformat(),
+                    "amount": price,
+                    "subscription": sub_type,
+                    "invoice_id": invoice_id,
+                    "method": "cryptopay"
+                })
+                save_users()
+
+                # Очищаем временные данные
+                temp_auth.pop(user_id, None)
+
+                await query.message.edit_text(
+                    f"✅ *Оплата подтверждена!*\n\n"
+                    f"📅 Ваша подписка активна до {new_expires.strftime('%d.%m.%Y')}\n"
+                    f"💰 Сумма: ${price:.2f}\n"
+                    f"Теперь вы можете запускать рассылку.",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode=enums.ParseMode.MARKDOWN
+                )
+                # Уведомляем администраторов
+                for admin_id in ADMIN_IDS:
+                    try:
+                        await bot.send_message(
+                            admin_id,
+                            f"✅ Пользователь {user_id} оплатил подписку {sub_type} (${price}) через CryptoPay. Действует до {new_expires.strftime('%d.%m.%Y')}"
+                        )
+                    except:
+                        pass
+            else:
+                await query.answer("⏳ Платёж ещё не подтверждён. Подождите немного и нажмите «Проверить» снова.", show_alert=True)
+        else:
+            await query.answer("❌ Счёт не найден", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка проверки платежа: {e}")
+        await query.answer("Ошибка при проверке, попробуйте позже", show_alert=True)
+
+# ========== ОСТАЛЬНЫЕ ФУНКЦИИ (ПРОФИЛЬ, СТАТИСТИКА И Т.Д.) ==========
+async def process_card_payment(query: CallbackQuery):
     user_id = query.from_user.id
     sub_data = temp_auth.get(user_id, {})
     price = sub_data.get("price", 0)
