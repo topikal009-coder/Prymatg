@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+.env
+
+# Railway data (локально не храним, на Railway будет Volume)
+data/
+*.session
+*.session-journal
+
+# IDE
+.vscode/
+.idea/
+
+# Логи
+*.log
+
+# Секреты
+token.txt
