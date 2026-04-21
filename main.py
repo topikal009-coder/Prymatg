@@ -22,7 +22,7 @@ import logging
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %name)s - %levelname)s - %message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 API_ID = 30032542
 API_HASH = "ce646da1307fb452305d49f9bb8751ca"
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7BKB0mnw')
+
+# === ФЛАГ: РАЗРЕШИТЬ ЗАПУСК РАССЫЛКИ ===
+SPAM_ENABLED = True  # ← меняем на True, чтобы включить рассылку
 
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
@@ -51,10 +54,9 @@ os.makedirs(bot_session_dir, exist_ok=True)
 logger.info(f"📁 Рабочая директория: {WORK_DIR}")
 logger.info(f"📁 На Railway: {IS_RAILWAY}")
 
-# === НАСТРОЙКА КЛЮЧЕЙ (новые случайные форматы) ===
+# === НАСТРОЙКА КЛЮЧЕЙ ===
 KEYS_FILE = os.path.join(WORK_DIR, 'activation_keys.json')
 
-# Функция генерации случайного ключа (для автоматической выдачи)
 def generate_random_key(prefix="Msdf"):
     import random
     import string
@@ -63,7 +65,6 @@ def generate_random_key(prefix="Msdf"):
 
 def load_keys():
     default_keys = {
-        # Предустановленные ключи (можно менять через админку)
         "Msdf_7d9f3k_sdfs_92jd": ("Неделя", 7, False),
         "Msdf_3k9d0f_sdfs_4hrt": ("Месяц", 30, False),
         "Msdf_8g4h1t_sdfs_6jsk": ("Год", 365, False),
@@ -287,6 +288,7 @@ async def reconnect_account(user_id, phone):
 
 # --- РАССЫЛКА (ОБЫЧНАЯ И БЕЗОПАСНАЯ) ---
 async def spam_cycle(user_id, phone, data, message):
+    # Эта функция не будет вызываться, если SPAM_ENABLED = False
     status_msg = None
     if message:
         status_msg = await message.reply(f"🚀 Запуск рассылки для {phone}...")
@@ -363,6 +365,7 @@ async def spam_cycle(user_id, phone, data, message):
     logger.info(f"Рассылка {phone} остановлена")
 
 async def safe_spam_cycle(user_id, phone, data, message):
+    # Эта функция не будет вызываться, если SPAM_ENABLED = False
     status_msg = None
     if message:
         status_msg = await message.reply(f"🛡 Запуск безопасной рассылки для {phone}...")
@@ -455,19 +458,16 @@ bot = Client(
 
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard(user_id):
-    # Базовые кнопки (всегда)
     kb = [
         [InlineKeyboardButton("🚀 Запустить", callback_data="start_ras"),
          InlineKeyboardButton("🛍 Магазин", callback_data="shop")],
         [InlineKeyboardButton("👤 Профиль", callback_data="profile")],
         [InlineKeyboardButton("ℹ️ Информация о боте", callback_data="info")]
     ]
-    # Кнопка "Стоп рассылки" появляется только если хотя бы один аккаунт запущен
     if user_id in users_data:
         has_running = any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
         if has_running:
             kb.append([InlineKeyboardButton("🛑 Стоп рассылки", callback_data="stop_all")])
-    # Админ панель для админа
     if is_admin(user_id):
         kb.append([InlineKeyboardButton("🛠 Админ панель", callback_data="admin_panel")])
     return InlineKeyboardMarkup(kb)
@@ -504,12 +504,8 @@ def get_back_keyboard():
 
 # ========== ФУНКЦИЯ АВТОВЫДАЧИ КЛЮЧА ПОСЛЕ ОПЛАТЫ ==========
 async def issue_key_to_user(user_id, subscription_type, days):
-    """Автоматически генерирует и выдаёт ключ пользователю, добавляет подписку."""
-    # Генерируем новый уникальный ключ
     new_key = generate_random_key()
-    # Сохраняем ключ в общий список ключей
     current_keys = load_keys()
-    # Определяем описание ключа
     if subscription_type == "week":
         desc = f"Неделя (автовыдача)"
     elif subscription_type == "month":
@@ -518,12 +514,10 @@ async def issue_key_to_user(user_id, subscription_type, days):
         desc = f"Год (автовыдача)"
     else:
         desc = f"Навсегда (автовыдача)"
-    current_keys[new_key] = (desc, days, False)  # не админский
+    current_keys[new_key] = (desc, days, False)
     save_keys(current_keys)
 
-    # Проверяем, есть ли уже пользователь
     if user_id in users_data:
-        # Обновляем подписку (продлеваем)
         old_expires = datetime.fromisoformat(users_data[user_id]["expires"])
         new_expires = max(old_expires, datetime.now()) + timedelta(days=days)
         users_data[user_id]["expires"] = new_expires.isoformat()
@@ -531,13 +525,12 @@ async def issue_key_to_user(user_id, subscription_type, days):
         save_users()
         return new_key, new_expires
     else:
-        # Создаём нового пользователя
         expires = datetime.now() + timedelta(days=days)
         users_data[user_id] = {
             "expires": expires.isoformat(),
             "key_used": new_key,
             "is_admin": False,
-            "username": "",  # заполнится при первом /start
+            "username": "",
             "bound_username": "",
             "accounts": {}
         }
@@ -550,9 +543,7 @@ async def start_cmd(c: Client, m: Message):
     user_id = m.from_user.id
     username = m.from_user.username or m.from_user.first_name
 
-    # Если пользователь не зарегистрирован, показываем только магазин и профиль? Лучше предложить купить подписку.
     if user_id not in users_data:
-        # Предлагаем купить подписку через магазин
         await m.reply(
             f"✨ *Добро пожаловать в NeverkaBOT, {username}!* ✨\n\n"
             f"🤖 У вас пока нет активной подписки.\n"
@@ -563,7 +554,6 @@ async def start_cmd(c: Client, m: Message):
         )
         return
 
-    # Проверяем, идёт ли рассылка – если да, не показываем фото
     has_running = any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
     photo_id = None if has_running else get_welcome_photo_id()
 
@@ -580,20 +570,15 @@ async def start_cmd(c: Client, m: Message):
     else:
         await m.reply(text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
-# Обработчик текстовых сообщений (ключ, добавление аккаунта, настройки) – остаётся как раньше
 @bot.on_message(filters.text & filters.private)
 async def handle_text(c: Client, m: Message):
     user_id = m.from_user.id
     text = m.text
 
-    # Если пользователь не зарегистрирован, но вводит ключ вручную (старый метод)
     if user_id not in users_data:
-        # Возможно, он хочет ввести ключ? У нас теперь только магазин, но на всякий случай оставим обработку ключа
-        # Но лучше перенаправить в магазин
         await m.reply("🔐 У вас нет подписки. Пожалуйста, приобретите её в магазине.", reply_markup=get_main_keyboard(user_id))
         return
 
-    # Остальная логика (добавление аккаунта, смена текста/интервала) – без изменений
     if user_id in temp_auth and temp_auth[user_id].get("step") == "phone":
         await process_phone_input(c, m)
         return
@@ -663,9 +648,14 @@ async def handle_text(c: Client, m: Message):
                     await asyncio.sleep(2)
                 if "client" in acc:
                     acc["running"] = True
-                    asyncio.create_task(safe_spam_cycle(user_id, phone, acc, m))
+                    if SPAM_ENABLED:
+                        asyncio.create_task(safe_spam_cycle(user_id, phone, acc, m))
+                    else:
+                        await m.reply("⛔ Запуск рассылки временно отключён администратором.")
+                        acc["running"] = False
             save_users()
-            await m.reply(f"🛡 Безопасная рассылка запущена для {len(accounts)} аккаунтов.", reply_markup=get_main_keyboard(user_id))
+            if SPAM_ENABLED:
+                await m.reply(f"🛡 Безопасная рассылка запущена для {len(accounts)} аккаунтов.", reply_markup=get_main_keyboard(user_id))
             temp_auth.pop(user_id)
         except ValueError:
             await m.reply("❌ Введите число.")
@@ -756,7 +746,6 @@ async def handle_callback(c: Client, query: CallbackQuery):
     user_id = query.from_user.id
     data = query.data
 
-    # Если пользователь не зарегистрирован, но нажал на кнопку из магазина – разрешаем
     if user_id not in users_data and data not in ["shop", "back_to_main", "sub_week", "sub_month", "sub_year", "sub_forever", "payment_crypto", "payment_card", "cancel_payment"]:
         await query.answer("❌ У вас нет подписки. Приобретите её в магазине.", show_alert=True)
         return
@@ -814,7 +803,6 @@ async def handle_callback(c: Client, query: CallbackQuery):
         await query.message.reply("📸 Отправьте новое приветственное фото (как обычное изображение).")
         await query.answer()
     elif data == "back_to_main":
-        # Возвращаемся в главное меню, обновляя клавиатуру (чтобы скрыть/показать кнопку стоп)
         has_running = user_id in users_data and any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
         photo_id = None if has_running else get_welcome_photo_id()
         text = "✨ *Главное меню*" if user_id in users_data else "✨ *Добро пожаловать!* Приобретите подписку в магазине."
@@ -843,13 +831,11 @@ async def show_subscription(query, sub_type, days, price):
         [InlineKeyboardButton("❌ Отменить", callback_data="cancel_payment")]
     ])
     await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
-    # Сохраняем временно данные о выбранной подписке
     temp_auth[query.from_user.id] = {"subscription": sub_type, "days": days, "price": price}
 
 @bot.on_callback_query(filters.regex(r"^pay_(week|month|year|forever)$"))
 async def pay_subscription(c, query):
     sub_type = query.data.split("_")[1]
-    # Восстанавливаем данные из temp_auth
     if query.from_user.id not in temp_auth:
         await query.answer("Ошибка, попробуйте снова", show_alert=True)
         return
@@ -869,10 +855,8 @@ async def process_crypto_payment(query):
     days = sub_data.get("days", 30)
     price = sub_data.get("price", 19.99)
 
-    # Генерируем ключ и выдаём пользователю
     new_key, expires = await issue_key_to_user(user_id, sub_type, days)
 
-    # Отправляем сообщение с ключом
     text = (
         f"✅ *Оплата успешно проведена!*\n\n"
         f"🎉 Ваш ключ доступа: `{new_key}`\n"
@@ -881,7 +865,6 @@ async def process_crypto_payment(query):
         f"Для начала работы нажмите /start."
     )
     await query.message.edit_text(text, parse_mode=enums.ParseMode.MARKDOWN, reply_markup=get_main_keyboard(user_id))
-    # Очищаем временные данные
     temp_auth.pop(user_id, None)
 
 async def process_card_payment(query):
@@ -946,6 +929,9 @@ async def show_info(query: CallbackQuery):
     await query.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode=enums.ParseMode.MARKDOWN)
 
 async def start_normal_ras(query: CallbackQuery):
+    if not SPAM_ENABLED:
+        await query.answer("⛔ Запуск рассылки временно отключён администратором.", show_alert=True)
+        return
     user_id = query.from_user.id
     if not has_active_subscription(user_id):
         await query.answer("❌ Ваша подписка истекла! Продлите в магазине.", show_alert=True)
@@ -970,6 +956,9 @@ async def start_normal_ras(query: CallbackQuery):
     await query.answer()
 
 async def start_safe_mode(query: CallbackQuery):
+    if not SPAM_ENABLED:
+        await query.answer("⛔ Запуск рассылки временно отключён администратором.", show_alert=True)
+        return
     user_id = query.from_user.id
     if not has_active_subscription(user_id):
         await query.answer("❌ Подписка истекла!", show_alert=True)
@@ -1099,33 +1088,28 @@ async def shutdown(sig=None):
                 except:
                     pass
     await bot.stop()
-    sys.exit(0)
 
-# ========== ЗАПУСК ==========
-if __name__ == "__main__":
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop = asyncio.get_event_loop()
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(sig)))
-
+async def main():
     load_users()
-
-    async def startup():
-        logger.info("🚀 Запуск бота...")
-        if IS_RAILWAY:
-            test_file = os.path.join(WORK_DIR, 'test_write.txt')
-            try:
-                with open(test_file, 'w') as f:
-                    f.write('test')
-                os.remove(test_file)
-                logger.info("✅ Volume доступен для записи")
-            except Exception as e:
-                logger.error(f"❌ Volume НЕ доступен: {e}")
-        await load_user_sessions()
-
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(startup())
+    logger.info("🚀 Запуск бота...")
+    if IS_RAILWAY:
+        test_file = os.path.join(WORK_DIR, 'test_write.txt')
+        try:
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            logger.info("✅ Volume доступен для записи")
+        except Exception as e:
+            logger.error(f"❌ Volume НЕ доступен: {e}")
+    await load_user_sessions()
     logger.info("🤖 Бот запущен")
+    await bot.run()
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(sig)))
     try:
-        bot.run()
-    except (KeyboardInterrupt, SystemExit):
+        asyncio.run(main())
+    except KeyboardInterrupt:
         loop.run_until_complete(shutdown())
