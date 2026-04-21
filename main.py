@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # --- КОНФИГ ---
 API_ID = 30032542
 API_HASH = "ce646da1307fb452305d49f9bb8751ca"
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7BKB0mnw)
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8659319275:AAEaMn1u9a-iCxmGQQEpL2qOz3W7BKB0mnw')
 
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
