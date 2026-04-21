@@ -6,15 +6,13 @@ import sys
 import signal
 import random
 from datetime import datetime, timedelta
-from pyrogram import Client, filters, enums
+from pyrogram import Client, filters, enums, idle
 from pyrogram.types import (
-    ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton,
     CallbackQuery, Message
 )
 from pyrogram.errors import (
-    PeerIdInvalid, Forbidden, SessionRevoked,
-    AuthKeyUnregistered, Unauthorized, FloodWait,
-    ApiIdInvalid, AccessTokenInvalid
+    PeerIdInvalid, Forbidden, FloodWait
 )
 from pyrogram.handlers import DisconnectHandler
 import logging
@@ -40,7 +38,6 @@ IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
 if IS_RAILWAY:
     WORK_DIR = '/app/data'
     if not os.path.exists(WORK_DIR):
-        logger.error(f"❌ Volume не смонтирован в {WORK_DIR}")
         os.makedirs(WORK_DIR, exist_ok=True)
 else:
     WORK_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +55,6 @@ logger.info(f"📁 На Railway: {IS_RAILWAY}")
 KEYS_FILE = os.path.join(WORK_DIR, 'activation_keys.json')
 
 def generate_random_key(prefix="Msdf"):
-    import random
     import string
     suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
     return f"{prefix}_{suffix}"
@@ -104,14 +100,6 @@ reconnect_tasks = {}
 keep_alive_tasks = {}
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-def parse_key_with_username(key_text):
-    pattern = r'^(.*?)-@([a-zA-Z0-9_]+)$'
-    match = re.match(pattern, key_text.strip())
-    if match:
-        return match.group(1), match.group(2)
-    else:
-        return key_text.strip(), None
-
 def get_welcome_photo_id():
     try:
         if os.path.exists(WELCOME_PHOTO_FILE):
@@ -370,7 +358,6 @@ async def safe_spam_cycle(user_id, phone, data, message):
     texts = data.get("texts_list", [])
     if not texts:
         texts = [data["text"]]
-    base_interval = data.get("base_interval", 3600)
     sent_chats = []
     error_count = 0
     cycle_count = 0
@@ -500,7 +487,7 @@ def get_admin_panel_keyboard():
 def get_back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]])
 
-# ========== ФУНКЦИЯ АВТОВЫДАЧИ КЛЮЧА ПОСЛЕ ОПЛАТЫ ==========
+# ========== ФУНКЦИЯ АВТОВЫДАЧИ КЛЮЧА ==========
 async def issue_key_to_user(user_id, subscription_type, days):
     new_key = generate_random_key()
     current_keys = load_keys()
@@ -535,7 +522,7 @@ async def issue_key_to_user(user_id, subscription_type, days):
         save_users()
         return new_key, expires
 
-# ========== ОБРАБОТЧИКИ СООБЩЕНИЙ И CALLBACK'ОВ ==========
+# ========== ОБРАБОТЧИКИ ==========
 @bot.on_message(filters.command("start"))
 async def start_cmd(c: Client, m: Message):
     user_id = m.from_user.id
@@ -851,7 +838,6 @@ async def process_crypto_payment(query):
     sub_data = temp_auth.get(user_id, {})
     sub_type = sub_data.get("subscription", "month")
     days = sub_data.get("days", 30)
-    price = sub_data.get("price", 19.99)
 
     new_key, expires = await issue_key_to_user(user_id, sub_type, days)
 
@@ -866,7 +852,6 @@ async def process_crypto_payment(query):
     temp_auth.pop(user_id, None)
 
 async def process_card_payment(query):
-    user_id = query.from_user.id
     text = (
         "💳 *Оплата украинской картой*\n\n"
         "Для оплаты этим методом обратитесь к администратору:\n"
@@ -1071,7 +1056,7 @@ async def handle_photo(c, m):
         await m.reply("Используйте кнопки меню.")
 
 # ========== ГРАЦИОЗНОЕ ЗАВЕРШЕНИЕ ==========
-async def shutdown(stop_event: asyncio.Event):
+async def shutdown():
     logger.info("🛑 Останавливаю бота...")
     for task in keep_alive_tasks.values():
         task.cancel()
@@ -1086,9 +1071,9 @@ async def shutdown(stop_event: asyncio.Event):
                 except:
                     pass
     await bot.stop()
-    stop_event.set()
 
-async def main(stop_event: asyncio.Event):
+# ========== ЗАПУСК ==========
+async def main():
     load_users()
     logger.info("🚀 Запуск бота...")
     if IS_RAILWAY:
@@ -1102,18 +1087,16 @@ async def main(stop_event: asyncio.Event):
             logger.error(f"❌ Volume НЕ доступен: {e}")
     await load_user_sessions()
     await bot.start()
-    logger.info("🤖 Бот запущен")
-    await stop_event.wait()
+    logger.info("🤖 Бот запущен и готов к работе")
+    await idle()  # Ожидание до остановки
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    stop_event = asyncio.Event()
+    loop = asyncio.get_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(stop_event)))
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
     try:
-        loop.run_until_complete(main(stop_event))
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
-        loop.run_until_complete(shutdown(stop_event))
+        loop.run_until_complete(shutdown())
     finally:
         loop.close()
