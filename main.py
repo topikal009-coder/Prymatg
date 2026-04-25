@@ -35,7 +35,7 @@ if not BOT_TOKEN:
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get('ADMIN_IDS', '964442694').split(',')]
 USDT_WALLET = os.environ.get('USDT_WALLET', 'UQBvJQAUej4jKWjlfeaHOz0smsnlhpp4t7jbgjdwisNzTUe-')
 CRYPTO_PAY_TOKEN = os.environ.get('CRYPTO_PAY_TOKEN', 'UQBvJQAUej4jKWjlfeaHOz0smsnlhpp4t7jbgjdwisNzTUe-')
-CRYPTO_PAY_TESTNET = os.environ.get('CRYPTO_PAY_TESTNET', 'False').lower() == 'true'
+CRYPTO_PAY_TESTNET = os.environ.get('CRYPTO_PAY_TESTNET', 'False').lower() == 'false'
 
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
