@@ -489,8 +489,8 @@ bot = Client(
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard(user_id):
     kb = [
-        [InlineKeyboardButton("🚀 Запустить", callback_data="start_menu")],
-        [InlineKeyboardButton("🛑 Стоп все", callback_data="stop_all")],
+        [InlineKeyboardButton("🚀 Запустить", callback_data="start_menu",
+        InlineKeyboardButton("🛑 Стоп все", callback_data="stop_all")],
         [InlineKeyboardButton("🛍 Магазин", callback_data="shop")],
         [InlineKeyboardButton("👤 Профиль", callback_data="profile")],
         [InlineKeyboardButton("ℹ️ Информация о боте", callback_data="info")]
