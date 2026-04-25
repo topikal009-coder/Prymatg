@@ -249,7 +249,7 @@ async def load_user_sessions():
                 session_name = acc_data.get("session_name", os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{user_id}"))
                 session_file = f"{session_name}.session"
                 if os.path.exists(session_file):
-                    client = Client(session_name, api_id=API_ID, api_hash=API_HASH, workdir=WORK_DIR, skip_updates=True)
+                    client = Client(session_name, api_id=API_ID, api_hash=API_HASH, workdir=WORK_DIR)
                     async def on_disconnect(client, uid=user_id, ph=phone):
                         await schedule_reconnect(uid, ph)
                     client.add_handler(DisconnectHandler(on_disconnect))
@@ -299,7 +299,7 @@ async def reconnect_account(user_id, phone):
     acc_data = users_data[user_id]["accounts"][phone]
     session_name = acc_data.get("session_name", os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{user_id}"))
     try:
-        client = Client(session_name, api_id=API_ID, api_hash=API_HASH, workdir=WORK_DIR, skip_updates=True)
+        client = Client(session_name, api_id=API_ID, api_hash=API_HASH, workdir=WORK_DIR)
         async def on_disconnect(client, uid=user_id, ph=phone):
             await schedule_reconnect(uid, ph)
         client.add_handler(DisconnectHandler(on_disconnect))
@@ -323,7 +323,7 @@ async def reconnect_account(user_id, phone):
 async def spam_cycle(user_id, phone, data, message):
     status_msg = None
     if message:
-        status_msg = await message.reply(f"🚀 Запуск обычной рассылки для {phone}...")
+        status_msg = await message.reply(f"🚀 Запуск рассылки для {phone}...")
     sent_chats = []
     error_count = 0
     cycle_count = 0
@@ -391,7 +391,7 @@ async def spam_cycle(user_id, phone, data, message):
 
     if status_msg:
         try:
-            await status_msg.edit_text(f"✅ Обычная рассылка {phone} завершена. Циклов: {cycle_count}, чатов: {len(sent_chats)}")
+            await status_msg.edit_text(f"✅ Рассылка {phone} завершена. Циклов: {cycle_count}, чатов: {len(sent_chats)}")
         except:
             pass
     logger.info(f"Рассылка {phone} остановлена")
@@ -489,8 +489,8 @@ bot = Client(
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard(user_id):
     kb = [
-        [InlineKeyboardButton("🚀 Запустить", callback_data="start_menu",
-        InlineKeyboardButton("🛑 Стоп все", callback_data="stop_all")],
+        [InlineKeyboardButton("🚀 Запустить", callback_data="start_menu")],
+        [InlineKeyboardButton("🛑 Стоп все", callback_data="stop_all")],
         [InlineKeyboardButton("🛍 Магазин", callback_data="shop")],
         [InlineKeyboardButton("👤 Профиль", callback_data="profile")],
         [InlineKeyboardButton("ℹ️ Информация о боте", callback_data="info")]
@@ -567,7 +567,6 @@ async def activate_key(user_id, key_text):
         logger.warning(f"❌ Ключ '{key_text}' не найден")
         return False, "❌ Неверный ключ активации."
 
-    # Проверяем, не использован ли ключ кем-то другим
     for uid, data in users_data.items():
         if data.get("key_used") == key_text:
             logger.warning(f"❌ Ключ '{key_text}' уже использован пользователем {uid}")
@@ -586,8 +585,6 @@ async def activate_key(user_id, key_text):
         is_admin_key = False
 
     ensure_user_exists(user_id)
-    # Вычисляем новую дату окончания: если текущая подписка активна, добавляем дни к её окончанию,
-    # иначе начинаем от текущего момента
     current_expires = datetime.fromisoformat(users_data[user_id]["expires"])
     now = datetime.now()
     if current_expires > now:
@@ -685,7 +682,7 @@ async def start_all_normal(user_id, message=None):
         if not accounts[phone].get("running", False):
             if await start_one_account(user_id, phone, "normal", None):
                 started += 1
-            await asyncio.sleep(1)  # небольшая задержка между запусками
+            await asyncio.sleep(1)
     if message:
         await message.reply(f"🚀 Запущено обычных рассылок на {started} аккаунтах.")
 
@@ -757,7 +754,7 @@ async def handle_text(c: Client, m: Message):
 
     ensure_user_exists(user_id, m.from_user.username or m.from_user.first_name)
 
-    # Обработка добавления аккаунта (шаг 1)
+    # Обработка добавления аккаунта
     if user_id in temp_auth and temp_auth[user_id].get("step") == "phone":
         await process_phone_input(c, m)
         return
@@ -920,7 +917,7 @@ async def process_phone_input(c, m):
         return
     session_name = os.path.join(WORK_DIR, 'sessions', f"{phone.replace('+', '').replace(' ', '')}_{user_id}")
     try:
-        client = Client(session_name, api_id=API_ID, api_hash=API_HASH, phone_number=phone, workdir=WORK_DIR, skip_updates=True)
+        client = Client(session_name, api_id=API_ID, api_hash=API_HASH, phone_number=phone, workdir=WORK_DIR)
         await client.connect()
         sent = await client.send_code(phone)
         temp_auth[user_id] = {
