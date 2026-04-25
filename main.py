@@ -489,20 +489,18 @@ bot = Client(
 # ========== КЛАВИАТУРЫ ==========
 def get_main_keyboard(user_id):
     kb = [
-        [InlineKeyboardButton("🚀 Запустить", callback_data="start_ras"),
-         InlineKeyboardButton("🛍 Магазин", callback_data="shop")],
+        [InlineKeyboardButton("🚀 Запустить все", callback_data="start_all"),
+         InlineKeyboardButton("🛑 Стоп все", callback_data="stop_all")],
+        [InlineKeyboardButton("🛍 Магазин", callback_data="shop")],
         [InlineKeyboardButton("👤 Профиль", callback_data="profile")],
         [InlineKeyboardButton("ℹ️ Информация о боте", callback_data="info")]
     ]
-    if user_id in users_data:
-        has_running = any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
-        if has_running:
-            kb.append([InlineKeyboardButton("🛑 Стоп рассылки", callback_data="stop_all")])
     if is_admin(user_id):
         kb.append([InlineKeyboardButton("🛠 Админ панель", callback_data="admin_panel")])
     return InlineKeyboardMarkup(kb)
 
 def get_start_menu_keyboard():
+    # Оставлено для совместимости, но сейчас не используется
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⚙️ Сменить интервал", callback_data="change_interval")],
         [InlineKeyboardButton("✏️ Сменить текст", callback_data="change_text")],
@@ -535,6 +533,17 @@ def get_admin_panel_keyboard():
 def get_back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]])
 
+def get_account_manage_keyboard(phone):
+    """Клавиатура управления конкретным аккаунтом"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Изменить текст", callback_data=f"edit_text_{phone}")],
+        [InlineKeyboardButton("⏱ Изменить интервал", callback_data=f"edit_interval_{phone}")],
+        [InlineKeyboardButton("🚀 Запустить обычный", callback_data=f"start_normal_{phone}")],
+        [InlineKeyboardButton("🛡 Запустить безопасный", callback_data=f"start_safe_{phone}")],
+        [InlineKeyboardButton("🛑 Остановить", callback_data=f"stop_acc_{phone}")],
+        [InlineKeyboardButton("◀️ Назад к профилю", callback_data="profile")]
+    ])
+
 # ========== ФУНКЦИЯ ОТПРАВКИ ГЛАВНОГО МЕНЮ ==========
 async def send_main_menu(target, user_id, text=None):
     if text is None:
@@ -542,10 +551,8 @@ async def send_main_menu(target, user_id, text=None):
             text = "✨ *Главное меню*"
         else:
             text = "✨ *Добро пожаловать!* Приобретите подписку в магазине или активируйте ключ."
-    has_running = user_id in users_data and any(acc.get("running", False) for acc in users_data[user_id]["accounts"].values())
-    photo_id = None if has_running else get_welcome_photo_id()
-    
-    if photo_id and user_id in users_data:
+    photo_id = get_welcome_photo_id()
+    if photo_id:
         await target.reply_photo(photo_id, caption=text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
     else:
         await target.reply(text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
@@ -601,6 +608,77 @@ async def give_subscription(user_id, target_id, days):
         await bot.send_message(target_id, f"🎉 Администратор выдал вам подписку на {days} дней! Действует до {new_expires.strftime('%d.%m.%Y')}")
     except:
         pass
+
+# ========== ЗАПУСК / ОСТАНОВКА ДЛЯ ОДНОГО АККАУНТА ==========
+async def start_one_account(user_id, phone, mode="normal", message=None):
+    """mode: normal или safe"""
+    if not has_active_subscription(user_id):
+        if message:
+            await message.reply("❌ Для запуска рассылки необходима активная подписка! Приобретите её в магазине или активируйте ключ.")
+        return False
+    if phone not in users_data[user_id]["accounts"]:
+        return False
+    acc = users_data[user_id]["accounts"][phone]
+    if acc.get("running", False):
+        if message:
+            await message.reply(f"⚠️ Рассылка для {phone} уже запущена.")
+        return False
+    if "client" not in acc:
+        await reconnect_account(user_id, phone)
+        await asyncio.sleep(2)
+    if "client" not in acc:
+        if message:
+            await message.reply(f"❌ Не удалось подключиться к аккаунту {phone}")
+        return False
+    acc["running"] = True
+    if mode == "safe":
+        acc["safe_mode"] = True
+        asyncio.create_task(safe_spam_cycle(user_id, phone, acc, message))
+    else:
+        acc["safe_mode"] = False
+        asyncio.create_task(spam_cycle(user_id, phone, acc, message))
+    save_users()
+    if message:
+        await message.reply(f"✅ Запущена {'безопасная' if mode=='safe' else 'обычная'} рассылка для {phone}")
+    return True
+
+async def stop_one_account(user_id, phone, message=None):
+    if phone not in users_data[user_id]["accounts"]:
+        return False
+    acc = users_data[user_id]["accounts"][phone]
+    if not acc.get("running", False):
+        if message:
+            await message.reply(f"⚠️ Рассылка для {phone} уже остановлена.")
+        return False
+    acc["running"] = False
+    save_users()
+    if message:
+        await message.reply(f"🛑 Рассылка для {phone} остановлена")
+    return True
+
+async def start_all_accounts(user_id, message=None):
+    if not has_active_subscription(user_id):
+        if message:
+            await message.reply("❌ Для запуска рассылки необходима активная подписка! Приобретите её в магазине или активируйте ключ.")
+        return
+    accounts = users_data[user_id]["accounts"]
+    started = 0
+    for phone in accounts:
+        if not accounts[phone].get("running", False):
+            if await start_one_account(user_id, phone, "normal", None):
+                started += 1
+    if message:
+        await message.reply(f"🚀 Запущено обычных рассылок: {started}")
+
+async def stop_all_accounts(user_id, message=None):
+    accounts = users_data[user_id]["accounts"]
+    stopped = 0
+    for phone in accounts:
+        if accounts[phone].get("running", False):
+            if await stop_one_account(user_id, phone, None):
+                stopped += 1
+    if message:
+        await message.reply(f"🛑 Остановлено рассылок: {stopped}")
 
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
 @bot.on_message(filters.command("start"))
@@ -659,7 +737,7 @@ async def send_key_command(c: Client, m: Message):
 @bot.on_message(filters.text & filters.private)
 async def handle_text(c: Client, m: Message):
     user_id = m.from_user.id
-    text = m.text
+    text = m.text.strip()
 
     ensure_user_exists(user_id, m.from_user.username or m.from_user.first_name)
 
@@ -673,84 +751,75 @@ async def handle_text(c: Client, m: Message):
     if user_id in temp_auth and temp_auth[user_id].get("step") == "password":
         await process_password_input(c, m)
         return
-    # Смена текста
-    if user_id in temp_auth and temp_auth[user_id].get("step") == "change_text":
-        new_text = text.strip()
-        for acc in users_data[user_id]["accounts"].values():
-            acc["text"] = new_text
-        save_users()
-        await send_main_menu(m, user_id, "✅ Текст рассылки обновлён для всех аккаунтов.")
+
+    # Смена текста для конкретного аккаунта
+    if user_id in temp_auth and temp_auth[user_id].get("step") == "change_text_for_account":
+        phone = temp_auth[user_id]["phone"]
+        if phone in users_data[user_id]["accounts"]:
+            users_data[user_id]["accounts"][phone]["text"] = text
+            save_users()
+            await send_main_menu(m, user_id, f"✅ Текст для аккаунта {phone} обновлён.")
+        else:
+            await send_main_menu(m, user_id, "❌ Аккаунт не найден.")
         temp_auth.pop(user_id)
         return
-    # Смена интервала
-    if user_id in temp_auth and temp_auth[user_id].get("step") == "change_interval":
+
+    # Смена интервала для аккаунта
+    if user_id in temp_auth and temp_auth[user_id].get("step") == "change_interval_for_account":
+        phone = temp_auth[user_id]["phone"]
         try:
             interval = int(text)
             if interval < 10:
                 await m.reply("⚠️ Интервал меньше 10 секунд может привести к бану. Введите число >= 10.")
                 return
-            for acc in users_data[user_id]["accounts"].values():
-                acc["interval"] = interval
-            save_users()
-            await send_main_menu(m, user_id, f"✅ Интервал установлен: {interval} сек.")
+            if phone in users_data[user_id]["accounts"]:
+                users_data[user_id]["accounts"][phone]["interval"] = interval
+                save_users()
+                await send_main_menu(m, user_id, f"✅ Интервал для {phone} установлен: {interval} сек.")
+            else:
+                await send_main_menu(m, user_id, "❌ Аккаунт не найден.")
             temp_auth.pop(user_id)
         except ValueError:
             await m.reply("❌ Введите целое число секунд.")
         return
-    # Безопасный режим – ввод текстов
-    if user_id in temp_auth and temp_auth[user_id].get("step") == "safe_texts":
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        if 3 <= len(lines) <= 5:
-            temp_auth[user_id]["texts_list"] = lines
-            temp_auth[user_id]["step"] = "safe_interval"
-            await m.reply(
-                f"✅ Принято {len(lines)} текстов.\n\n"
-                "Теперь введите *базовый интервал* в секундах (рекомендуется 3600 = 1 час):\n"
-                "Бот будет отправлять сообщения с задержкой от 55 до 70 минут.",
-                parse_mode=enums.ParseMode.MARKDOWN
-            )
-        else:
-            await m.reply("❌ Нужно ввести от 3 до 5 текстов (каждый с новой строки). Попробуйте ещё раз.")
+
+    # Безопасный режим – последовательный ввод трёх текстов
+    if user_id in temp_auth and temp_auth[user_id].get("step") == "safe_text_1":
+        phone = temp_auth[user_id]["phone"]
+        temp_auth[user_id]["texts"] = [text]
+        temp_auth[user_id]["step"] = "safe_text_2"
+        await m.reply("🔹 Отправьте **второй** текст (для безопасного режима):")
         return
-    # Безопасный режим – ввод интервала
-    if user_id in temp_auth and temp_auth[user_id].get("step") == "safe_interval":
-        try:
-            base_int = int(text)
-            if base_int < 60:
-                await m.reply("❌ Интервал должен быть не менее 60 секунд.")
-                return
-            temp_auth[user_id]["base_interval"] = base_int
-            accounts = users_data[user_id]["accounts"]
-            if not accounts:
-                await m.reply("❌ Нет добавленных аккаунтов.")
-                temp_auth.pop(user_id)
-                return
-            for phone, acc in accounts.items():
-                acc["safe_mode"] = True
-                acc["texts_list"] = temp_auth[user_id]["texts_list"]
-                acc["base_interval"] = base_int
-                acc["text"] = temp_auth[user_id]["texts_list"][0]
-                if acc.get("running", False):
-                    acc["running"] = False
-                if "client" not in acc:
-                    await reconnect_account(user_id, phone)
-                    await asyncio.sleep(2)
-                if "client" in acc:
-                    acc["running"] = True
-                    if has_active_subscription(user_id):
-                        asyncio.create_task(safe_spam_cycle(user_id, phone, acc, m))
-                    else:
-                        await m.reply("❌ Для запуска рассылки необходима активная подписка! Приобретите её в магазине или активируйте ключ.")
-                        acc["running"] = False
-            save_users()
-            if has_active_subscription(user_id):
-                await send_main_menu(m, user_id, f"🛡 Безопасная рассылка запущена для {len(accounts)} аккаунтов.")
-            else:
-                await send_main_menu(m, user_id, "❌ Не удалось запустить рассылку: нет активной подписки.")
+    if user_id in temp_auth and temp_auth[user_id].get("step") == "safe_text_2":
+        temp_auth[user_id]["texts"].append(text)
+        temp_auth[user_id]["step"] = "safe_text_3"
+        await m.reply("🔹 Отправьте **третий** текст (для безопасного режима):")
+        return
+    if user_id in temp_auth and temp_auth[user_id].get("step") == "safe_text_3":
+        phone = temp_auth[user_id]["phone"]
+        texts = temp_auth[user_id]["texts"]
+        texts.append(text)
+        if len(texts) < 3:
+            # на всякий случай, если что-то пошло не так
+            await m.reply("❌ Ошибка: нужно ровно 3 текста. Начните заново.")
             temp_auth.pop(user_id)
-        except ValueError:
-            await m.reply("❌ Введите число.")
+            return
+        if phone in users_data[user_id]["accounts"]:
+            acc = users_data[user_id]["accounts"][phone]
+            acc["texts_list"] = texts
+            acc["text"] = texts[0]
+            acc["safe_mode"] = True
+            save_users()
+            # Запускаем безопасный режим
+            if has_active_subscription(user_id):
+                await start_one_account(user_id, phone, "safe", m)
+            else:
+                await m.reply("❌ Для запуска рассылки необходима активная подписка! Приобретите её в магазине или активируйте ключ.")
+        else:
+            await m.reply("❌ Аккаунт не найден.")
+        temp_auth.pop(user_id)
         return
+
     # Активация ключа
     if user_id in temp_auth and temp_auth[user_id].get("step") == "wait_key":
         key_text = text.strip()
@@ -765,6 +834,7 @@ async def handle_text(c: Client, m: Message):
         finally:
             temp_auth.pop(user_id, None)
         return
+
     # Выдача подписки – шаг 1 (ID)
     if user_id in temp_auth and temp_auth[user_id].get("step") == "give_subscription_id":
         try:
@@ -934,22 +1004,12 @@ async def handle_callback(c: Client, query: CallbackQuery):
         await show_profile(query)
     elif data == "info":
         await show_info(query)
-    elif data == "start_ras":
-        await query.message.edit_text("Выберите режим рассылки:", reply_markup=get_start_menu_keyboard())
-    elif data == "change_interval":
-        temp_auth[user_id] = {"step": "change_interval"}
-        await query.message.reply("⏱ Введите новый интервал между циклами (в секундах, минимум 10):")
+    elif data == "start_all":
+        await start_all_accounts(user_id, query.message)
         await query.answer()
-    elif data == "change_text":
-        temp_auth[user_id] = {"step": "change_text"}
-        await query.message.reply("✏️ Введите новый текст для рассылки (будет применён ко всем аккаунтам):")
-        await query.answer()
-    elif data == "start_normal":
-        await start_normal_ras(query)
-    elif data == "start_safe":
-        await start_safe_mode(query)
     elif data == "stop_all":
-        await stop_all_ras(query)
+        await stop_all_accounts(user_id, query.message)
+        await query.answer()
     elif data == "admin_panel" and is_admin(user_id):
         await query.message.edit_text("🛠 *Админ панель*", reply_markup=get_admin_panel_keyboard(), parse_mode=enums.ParseMode.MARKDOWN)
     elif data == "list_users" and is_admin(user_id):
@@ -986,6 +1046,49 @@ async def handle_callback(c: Client, query: CallbackQuery):
     elif data == "activate_key":
         temp_auth[user_id] = {"step": "wait_key"}
         await query.message.reply("🔑 Введите активационный ключ:")
+        await query.answer()
+    elif data.startswith("manage_acc_"):
+        phone = data.split("_", 2)[2]
+        if phone in users_data[user_id]["accounts"]:
+            await query.message.edit_text(
+                f"📱 Управление аккаунтом: `{phone}`\n\n"
+                f"Текст: {users_data[user_id]['accounts'][phone]['text'][:50]}...\n"
+                f"Интервал: {users_data[user_id]['accounts'][phone]['interval']} сек.\n"
+                f"Статус: {'🟢 Активен' if users_data[user_id]['accounts'][phone].get('running') else '🔴 Остановлен'}",
+                reply_markup=get_account_manage_keyboard(phone),
+                parse_mode=enums.ParseMode.MARKDOWN
+            )
+        else:
+            await query.answer("Аккаунт не найден", show_alert=True)
+    elif data.startswith("edit_text_"):
+        phone = data.split("_", 2)[2]
+        temp_auth[user_id] = {"step": "change_text_for_account", "phone": phone}
+        await query.message.reply(f"✏️ Введите новый текст для аккаунта {phone}:")
+        await query.answer()
+    elif data.startswith("edit_interval_"):
+        phone = data.split("_", 2)[2]
+        temp_auth[user_id] = {"step": "change_interval_for_account", "phone": phone}
+        await query.message.reply(f"⏱ Введите новый интервал (в секундах, минимум 10) для {phone}:")
+        await query.answer()
+    elif data.startswith("start_normal_"):
+        phone = data.split("_", 2)[2]
+        await start_one_account(user_id, phone, "normal", query.message)
+        await query.answer()
+    elif data.startswith("start_safe_"):
+        phone = data.split("_", 2)[2]
+        # Начинаем сбор трёх текстов
+        temp_auth[user_id] = {"step": "safe_text_1", "phone": phone}
+        await query.message.reply(
+            "🛡 *Безопасный режим*\n\n"
+            "Отправьте **первый** текст сообщением.\n"
+            "Затем я запрошу второй и третий тексты.\n\n"
+            "После получения трёх текстов рассылка запустится автоматически.",
+            parse_mode=enums.ParseMode.MARKDOWN
+        )
+        await query.answer()
+    elif data.startswith("stop_acc_"):
+        phone = data.split("_", 2)[2]
+        await stop_one_account(user_id, phone, query.message)
         await query.answer()
     elif data.startswith("check_payment_"):
         await check_payment(query)
@@ -1111,63 +1214,25 @@ async def show_profile(query: CallbackQuery):
             client_ok = "✅" if "client" in acc else "❌"
             safe_mark = "🛡" if acc.get("safe_mode", False) else ""
             text += f"{i}. {phone} {client_ok} {status} {safe_mark}\n   Текст: {acc['text'][:40]}...\n   Интервал: {acc['interval']} сек.\n"
+        # Добавляем кнопку управления для каждого аккаунта
+        keyboard_buttons = []
+        for phone in accounts:
+            keyboard_buttons.append([InlineKeyboardButton(f"⚙️ Управление {phone}", callback_data=f"manage_acc_{phone}")])
+        keyboard_buttons.append([InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")])
+        keyboard_buttons.append([InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate_key")])
+        keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")])
+        kb = InlineKeyboardMarkup(keyboard_buttons)
     else:
-        text += "\n📭 Нет добавленных аккаунтов.\n"
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")], [InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate_key")], [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")],
+            [InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate_key")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]
+        ])
     await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
 
 async def show_info(query: CallbackQuery):
-    text = "ℹ️ *О боте*\n\n🤖 **NeverkaBOT** — мощный инструмент для автоматической рассылки сообщений в Telegram-группы.\n\n⚙️ **Функции:**\n• Добавление нескольких аккаунтов\n• Настройка текста и интервала рассылки\n• Безопасный режим с рандомными текстами и интервалом 55-70 мин\n• Управление подпиской через магазин или активацию ключа\n\n💰 *Для запуска рассылки требуется активная подписка.*\n📞 **Поддержка:** @its_neverka\n\n© 2026 NeverkaBOT"
+    text = "ℹ️ *О боте*\n\n🤖 **NeverkaBOT** — мощный инструмент для автоматической рассылки сообщений в Telegram-группы.\n\n⚙️ **Функции:**\n• Добавление нескольких аккаунтов\n• Настройка текста и интервала рассылки для каждого аккаунта\n• Безопасный режим с 3 разными текстами и случайным интервалом 55-70 мин\n• Управление подпиской через магазин или активацию ключа\n\n💰 *Для запуска рассылки требуется активная подписка.*\n📞 **Поддержка:** @its_neverka\n\n© 2026 NeverkaBOT"
     await query.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode=enums.ParseMode.MARKDOWN)
-
-async def start_normal_ras(query: CallbackQuery):
-    user_id = query.from_user.id
-    if not has_active_subscription(user_id):
-        await query.answer("❌ Для запуска рассылки необходима активная подписка! Приобретите её в магазине или активируйте ключ.", show_alert=True)
-        return
-    accounts = users_data[user_id]["accounts"]
-    if not accounts:
-        await query.answer("❌ Нет добавленных аккаунтов", show_alert=True)
-        return
-    started = 0
-    for phone, acc in accounts.items():
-        if not acc.get("running", False):
-            if "client" not in acc:
-                await reconnect_account(user_id, phone)
-                await asyncio.sleep(2)
-            if "client" in acc:
-                acc["running"] = True
-                acc["safe_mode"] = False
-                asyncio.create_task(spam_cycle(user_id, phone, acc, query.message))
-                started += 1
-    save_users()
-    await send_main_menu(query.message, user_id, f"🚀 Запущено обычных рассылок: {started}")
-    await query.answer()
-
-async def start_safe_mode(query: CallbackQuery):
-    user_id = query.from_user.id
-    if not has_active_subscription(user_id):
-        await query.answer("❌ Для запуска рассылки необходима активная подписка! Приобретите её в магазине или активируйте ключ.", show_alert=True)
-        return
-    accounts = users_data[user_id]["accounts"]
-    if not accounts:
-        await query.answer("❌ Нет аккаунтов", show_alert=True)
-        return
-    temp_auth[user_id] = {"step": "safe_texts"}
-    await query.message.reply("🛡 *Безопасный режим*\n\nОтправьте от 3 до 5 текстов (каждый с новой строки).\nБот будет случайным образом выбирать один из них.\n\nПример:\nПривет, друг!\nКак дела?\nОтличный день!\nБудь здоров!\nХорошего настроения!", parse_mode=enums.ParseMode.MARKDOWN)
-    await query.answer()
-
-async def stop_all_ras(query: CallbackQuery):
-    user_id = query.from_user.id
-    accounts = users_data[user_id]["accounts"]
-    stopped = 0
-    for acc in accounts.values():
-        if acc.get("running", False):
-            acc["running"] = False
-            stopped += 1
-    save_users()
-    await send_main_menu(query.message, user_id, f"🛑 Остановлено рассылок: {stopped}")
-    await query.answer()
 
 async def list_all_users(query: CallbackQuery):
     if not users_data:
