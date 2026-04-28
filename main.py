@@ -5,7 +5,11 @@ import re
 import sys
 import signal
 import random
+import shutil
+import glob
+import gc
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pyrogram import Client, filters, enums, idle
 from pyrogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -36,6 +40,12 @@ ADMIN_IDS = [int(x.strip()) for x in os.environ.get('ADMIN_IDS', '964442694').sp
 USDT_WALLET = os.environ.get('USDT_WALLET', 'UQBvJQAUej4jKWjlfeaHOz0smsnlhpp4t7jbgjdwisNzTUe-')
 CRYPTO_PAY_TOKEN = os.environ.get('CRYPTO_PAY_TOKEN', 'UQBvJQAUej4jKWjlfeaHOz0smsnlhpp4t7jbgjdwisNzTUe-')
 CRYPTO_PAY_TESTNET = os.environ.get('CRYPTO_PAY_TESTNET', 'False').lower() == 'false'
+
+# === ЧАСОВОЙ ПОЯС КИЕВ ===
+try:
+    KYIV_TZ = ZoneInfo("Europe/Kiev")
+except:
+    KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 # === РАБОЧАЯ ДИРЕКТОРИЯ ===
 IS_RAILWAY = os.path.exists('/app') or 'RAILWAY_SERVICE_NAME' in os.environ
@@ -129,6 +139,205 @@ temp_auth = {}
 users_file = os.path.join(WORK_DIR, "bot_users.json")
 reconnect_tasks = {}
 keep_alive_tasks = {}
+
+# ========== ФУНКЦИЯ ОЧИСТКИ ФАЙЛОВ ==========
+def get_dir_size(path):
+    """Подсчет размера директории в байтах"""
+    total = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(path):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                try:
+                    total += os.path.getsize(filepath)
+                except:
+                    pass
+    except:
+        pass
+    return total
+
+async def cleanup_temp_files():
+    """
+    Очищает временные файлы, НЕ трогая сессии и ключи.
+    Возвращает количество освобожденных мегабайт.
+    """
+    freed_bytes = 0
+    
+    # Файлы и папки, которые НЕЛЬЗЯ удалять
+    protected_names = {
+        'sessions',
+        'activation_keys.json',
+        'bot_users.json',
+        'welcome_photo_id.txt',
+        'bot_session'
+    }
+    
+    # Шаблоны для удаления в WORK_DIR
+    patterns_to_clean = [
+        '*.journal',
+        '*.journal-*',
+        '*.wal',
+        '*.shm',
+        '*.log',
+        '*.log.*',
+        '*.temp',
+        '*.tmp',
+        '*.pyc',
+        '__pycache__',
+        '.pyrogram',
+        'downloads',
+        '*.lock'
+    ]
+    
+    try:
+        # 1. Очистка по шаблонам в WORK_DIR
+        for pattern in patterns_to_clean:
+            full_pattern = os.path.join(WORK_DIR, pattern)
+            for file_path in glob.glob(full_pattern):
+                try:
+                    if os.path.isfile(file_path):
+                        size = os.path.getsize(file_path)
+                        os.remove(file_path)
+                        freed_bytes += size
+                        logger.info(f"🗑 Удален файл: {os.path.basename(file_path)} ({size} байт)")
+                    elif os.path.isdir(file_path):
+                        dir_name = os.path.basename(file_path)
+                        if dir_name not in protected_names:
+                            size = get_dir_size(file_path)
+                            shutil.rmtree(file_path, ignore_errors=True)
+                            freed_bytes += size
+                            logger.info(f"🗑 Удалена папка: {dir_name} ({size} байт)")
+                except Exception as e:
+                    logger.error(f"Ошибка удаления {file_path}: {e}")
+        
+        # 2. Очистка кэша Pyrogram
+        cache_dirs = [
+            os.path.join(WORK_DIR, '.pyrogram'),
+            os.path.join(WORK_DIR, 'downloads'),
+            os.path.join(WORK_DIR, '__pycache__')
+        ]
+        for cache_dir in cache_dirs:
+            if os.path.exists(cache_dir):
+                try:
+                    size = get_dir_size(cache_dir)
+                    shutil.rmtree(cache_dir, ignore_errors=True)
+                    freed_bytes += size
+                    logger.info(f"🗑 Удален кэш: {cache_dir} ({size} байт)")
+                except Exception as e:
+                    logger.error(f"Ошибка удаления кэша {cache_dir}: {e}")
+        
+        # 3. Очистка системных файлов в /tmp (если на Railway)
+        if IS_RAILWAY:
+            tmp_patterns = ['/tmp/*.pyc', '/tmp/__pycache__']
+            for pattern in tmp_patterns:
+                for file_path in glob.glob(pattern):
+                    try:
+                        if os.path.isfile(file_path):
+                            size = os.path.getsize(file_path)
+                            os.remove(file_path)
+                            freed_bytes += size
+                    except:
+                        pass
+        
+        # 4. Принудительная сборка мусора Python
+        gc.collect()
+        
+    except Exception as e:
+        logger.error(f"Ошибка при очистке: {e}")
+    
+    freed_mb = freed_bytes / (1024 * 1024)
+    logger.info(f"💾 Освобождено: {freed_mb:.1f} МБ")
+    return freed_mb
+
+async def scheduled_cleanup():
+    """
+    Ежедневная очистка в 8:00 по Киеву:
+    1. Останавливает ВСЕ рассылки
+    2. Очищает временные файлы кроме сессий и ключей
+    3. Уведомляет всех пользователей
+    """
+    notified_users = set()
+    
+    while True:
+        try:
+            # Вычисляем время до следующей очистки (8:00 по Киеву)
+            now_kiev = datetime.now(KYIV_TZ)
+            target_time = now_kiev.replace(hour=8, minute=0, second=0, microsecond=0)
+            
+            if target_time <= now_kiev:
+                target_time += timedelta(days=1)
+            
+            wait_seconds = (target_time - now_kiev).total_seconds()
+            hours_left = wait_seconds / 3600
+            logger.info(f"🧹 Следующая очистка в 8:00 по Киеву (через {hours_left:.1f} часов)")
+            
+            await asyncio.sleep(wait_seconds)
+            
+            # === НАЧАЛО ОЧИСТКИ ===
+            logger.info("🧹 [8:00 Киев] Начинаю ежедневную очистку...")
+            
+            # 1. ОСТАНАВЛИВАЕМ ВСЕ РАССЫЛКИ
+            stopped_count = 0
+            for user_id, user_data in users_data.items():
+                for phone, acc_data in user_data.get("accounts", {}).items():
+                    if acc_data.get("running", False):
+                        acc_data["running"] = False
+                        stopped_count += 1
+                        logger.info(f"🛑 Остановлена рассылка: {phone} (user {user_id})")
+            
+            logger.info(f"🛑 Всего остановлено рассылок: {stopped_count}")
+            save_users()
+            
+            # Даем время задачам корректно завершиться
+            await asyncio.sleep(5)
+            
+            # 2. ОЧИСТКА ВРЕМЕННЫХ ФАЙЛОВ
+            freed_mb = await cleanup_temp_files()
+            
+            # 3. УВЕДОМЛЕНИЕ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ
+            notification_text = (
+                f"🧹 *Ежедневная очистка завершена!*\n\n"
+                f"🕗 Время: 8:00 по Киеву\n"
+                f"🛑 Остановлено рассылок: {stopped_count}\n"
+                f"💾 Освобождено: {freed_mb:.1f} МБ\n\n"
+                f"✅ *Бот готов к работе!*\n"
+                f"Для запуска рассылки используйте кнопку «🚀 Запустить»"
+            )
+            
+            for user_id in users_data:
+                if user_id in notified_users:
+                    continue
+                try:
+                    await bot.send_message(
+                        user_id,
+                        notification_text,
+                        parse_mode=enums.ParseMode.MARKDOWN
+                    )
+                    notified_users.add(user_id)
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+            
+            # Уведомляем админов отдельно
+            admin_text = (
+                f"🧹 *Очистка выполнена*\n"
+                f"📅 {datetime.now(KYIV_TZ).strftime('%d.%m.%Y %H:%M')} (Киев)\n"
+                f"🛑 Остановлено: {stopped_count} рассылок\n"
+                f"💾 Освобождено: {freed_mb:.1f} МБ\n"
+                f"👥 Уведомлено пользователей: {len(notified_users)}"
+            )
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(admin_id, admin_text, parse_mode=enums.ParseMode.MARKDOWN)
+                except:
+                    pass
+            
+            notified_users.clear()
+            logger.info(f"✅ Очистка завершена. Освобождено {freed_mb:.1f} МБ")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при очистке: {e}")
+            await asyncio.sleep(3600)  # Повтор через час в случае ошибки
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def get_welcome_photo_id():
@@ -530,6 +739,7 @@ def get_admin_panel_keyboard():
         [InlineKeyboardButton("👑 Создать админ-ключ", callback_data="create_admin_key")],
         [InlineKeyboardButton("🎁 Выдать подписку", callback_data="give_subscription_menu")],
         [InlineKeyboardButton("🖼 Сменить приветственное фото", callback_data="change_welcome_photo")],
+        [InlineKeyboardButton("🧹 Очистка вручную", callback_data="manual_cleanup")],
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]
     ])
 
@@ -559,7 +769,7 @@ async def send_main_menu(target, user_id, text=None):
     else:
         await target.reply(text, reply_markup=get_main_keyboard(user_id), parse_mode=enums.ParseMode.MARKDOWN)
 
-# ========== АКТИВАЦИЯ КЛЮЧА (ИСПРАВЛЕНА) ==========
+# ========== АКТИВАЦИЯ КЛЮЧА ==========
 async def activate_key(user_id, key_text):
     logger.info(f"🔑 Активация ключа '{key_text}' от пользователя {user_id}")
     keys = load_keys()
@@ -603,7 +813,7 @@ async def activate_key(user_id, key_text):
     else:
         return True, f"✅ Ключ «{desc}» активирован!\n📅 Подписка активна до {new_expires.strftime('%d.%m.%Y')}."
 
-# ========== ВЫДАЧА ПОДПИСКИ (ИСПРАВЛЕНА) ==========
+# ========== ВЫДАЧА ПОДПИСКИ ==========
 async def give_subscription(admin_id, target_id, days):
     if days <= 0:
         await bot.send_message(admin_id, "❌ Количество дней должно быть положительным.")
@@ -1048,6 +1258,24 @@ async def handle_callback(c: Client, query: CallbackQuery):
         temp_auth[user_id] = {"step": "wait_photo"}
         await query.message.reply("📸 Отправьте новое приветственное фото (как обычное изображение).")
         await query.answer()
+    elif data == "manual_cleanup" and is_admin(user_id):
+        await query.answer("🧹 Запускаю очистку...")
+        stopped = 0
+        for uid, user_data in users_data.items():
+            for phone, acc_data in user_data.get("accounts", {}).items():
+                if acc_data.get("running", False):
+                    acc_data["running"] = False
+                    stopped += 1
+        save_users()
+        await asyncio.sleep(3)
+        freed_mb = await cleanup_temp_files()
+        text = (
+            f"🧹 *Очистка выполнена!*\n\n"
+            f"🛑 Остановлено рассылок: {stopped}\n"
+            f"💾 Освобождено: {freed_mb:.1f} МБ\n\n"
+            f"✅ Бот готов к работе"
+        )
+        await query.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode=enums.ParseMode.MARKDOWN)
     elif data == "back_to_main":
         await send_main_menu(query.message, user_id)
     elif data == "add_account":
@@ -1208,7 +1436,7 @@ async def process_card_payment(query: CallbackQuery):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("📩 Я оплатил, уведомить", callback_data="notify_admin_card")], [InlineKeyboardButton("◀️ Назад", callback_data="shop")]])
     await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
 
-# ========== ПРОЧИЕ ФУНКЦИИ (ПРОФИЛЬ, СТАТИСТИКА и т.д.) ==========
+# ========== ПРОЧИЕ ФУНКЦИИ ==========
 async def show_profile(query: CallbackQuery):
     user_id = query.from_user.id
     ensure_user_exists(user_id, query.from_user.username or query.from_user.first_name)
@@ -1342,6 +1570,11 @@ async def main():
         except Exception as e:
             logger.error(f"❌ Volume НЕ доступен: {e}")
     await load_user_sessions()
+    
+    # ЗАПУСКАЕМ ЗАДАЧУ ЕЖЕДНЕВНОЙ ОЧИСТКИ В 8:00 ПО КИЕВУ
+    asyncio.create_task(scheduled_cleanup())
+    logger.info("🧹 Задача ежедневной очистки запущена (8:00 по Киеву)")
+    
     await bot.start()
     logger.info("🤖 Бот запущен и готов к работе")
     await idle()
