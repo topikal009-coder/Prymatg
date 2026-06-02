@@ -1,7 +1,5 @@
 pyrogram==2.0.106
-aiohttp==3.11.11
-pytz==2024.2
-Pillow==11.1.0
-python-dotenv==1.0.1
-cryptography==44.0.0
-uvloop==0.21.0
+tgcrypto==1.2.5
+aiohttp==3.10.0
+Pillow==10.4.0
+python-dotenv==1.0.0
