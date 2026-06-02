@@ -906,6 +906,47 @@ async def stop_all_accounts(user_id, message=None):
     if message:
         await message.reply(f"🛑 Остановлено рассылок: {stopped}")
 
+async def show_profile_handler(user_id, message):
+    """Отдельная функция для показа профиля"""
+    ensure_user_exists(user_id, message.from_user.username or message.from_user.first_name if hasattr(message.from_user, 'username') else "")
+    data = users_data[user_id]
+    accounts = data["accounts"]
+    total = len(accounts)
+    running = sum(1 for a in accounts.values() if a.get("running", False))
+    text = f"👤 *Мой профиль*\n\n🆔 ID: `{user_id}`\n👤 Имя: {data.get('username', 'Не указано')}\n"
+    if data.get('bound_username'):
+        text += f"🔗 Привязан к: @{data['bound_username']}\n"
+    text += f"📱 Аккаунтов: {total}/{MAX_ACCOUNTS_PER_USER}\n🟢 Активных рассылок: {running}\n"
+    if has_active_subscription(user_id):
+        text += f"📅 Подписка активна до: {datetime.fromisoformat(data['expires']).strftime('%d.%m.%Y')}\n"
+    else:
+        text += f"❌ *Подписка отсутствует* — для запуска рассылки необходимо её приобрести или активировать ключ.\n"
+    if accounts:
+        text += "\n📋 *Список аккаунтов*:\n"
+        for i, (phone, acc) in enumerate(accounts.items(), 1):
+            status = "🟢 Активен" if acc.get("running", False) else "🔴 Остановлен"
+            client_ok = "✅" if "client" in acc else "❌"
+            safe_mark = "🛡" if acc.get("safe_mode", False) else ""
+            text += f"{i}. {phone} {client_ok} {status} {safe_mark}\n   Текст: {acc['text'][:40]}...\n   Интервал: {acc['interval']} сек.\n"
+        keyboard_buttons = []
+        for phone in accounts:
+            keyboard_buttons.append([InlineKeyboardButton(f"⚙️ Управление {phone}", callback_data=f"manage_acc_{phone}")])
+        keyboard_buttons.append([InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")])
+        keyboard_buttons.append([InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate_key")])
+        keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")])
+        kb = InlineKeyboardMarkup(keyboard_buttons)
+    else:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")],
+            [InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate_key")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]
+        ])
+    
+    if isinstance(message, Message):
+        await message.reply(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
+    else:
+        await message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
+
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
 @bot.on_message(filters.command("start"))
 async def start_cmd(c: Client, m: Message):
@@ -913,6 +954,12 @@ async def start_cmd(c: Client, m: Message):
     username = m.from_user.username or m.from_user.first_name
     ensure_user_exists(user_id, username)
     await send_main_menu(m, user_id)
+
+@bot.on_message(filters.command("profile"))
+async def profile_cmd(c: Client, m: Message):
+    """Команда /profile для отображения профиля"""
+    user_id = m.from_user.id
+    await show_profile_handler(user_id, m)
 
 @bot.on_message(filters.command("give_subscription") & filters.private)
 async def give_subscription_command(c: Client, m: Message):
@@ -1222,7 +1269,8 @@ async def handle_callback(c: Client, query: CallbackQuery):
     elif data == "cancel_payment":
         await send_main_menu(query.message, user_id, "❌ Платёж отменён.")
     elif data == "profile":
-        await show_profile(query)
+        await show_profile_handler(user_id, query.message)
+        await query.answer()
     elif data == "info":
         await show_info(query)
     elif data == "start_menu":
@@ -1437,43 +1485,6 @@ async def process_card_payment(query: CallbackQuery):
     await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
 
 # ========== ПРОЧИЕ ФУНКЦИИ ==========
-async def show_profile(query: CallbackQuery):
-    user_id = query.from_user.id
-    ensure_user_exists(user_id, query.from_user.username or query.from_user.first_name)
-    data = users_data[user_id]
-    accounts = data["accounts"]
-    total = len(accounts)
-    running = sum(1 for a in accounts.values() if a.get("running", False))
-    text = f"👤 *Мой профиль*\n\n🆔 ID: `{user_id}`\n👤 Имя: {data.get('username', 'Не указано')}\n"
-    if data.get('bound_username'):
-        text += f"🔗 Привязан к: @{data['bound_username']}\n"
-    text += f"📱 Аккаунтов: {total}/{MAX_ACCOUNTS_PER_USER}\n🟢 Активных рассылок: {running}\n"
-    if has_active_subscription(user_id):
-        text += f"📅 Подписка активна до: {datetime.fromisoformat(data['expires']).strftime('%d.%m.%Y')}\n"
-    else:
-        text += f"❌ *Подписка отсутствует* — для запуска рассылки необходимо её приобрести или активировать ключ.\n"
-    if accounts:
-        text += "\n📋 *Список аккаунтов*:\n"
-        for i, (phone, acc) in enumerate(accounts.items(), 1):
-            status = "🟢 Активен" if acc.get("running", False) else "🔴 Остановлен"
-            client_ok = "✅" if "client" in acc else "❌"
-            safe_mark = "🛡" if acc.get("safe_mode", False) else ""
-            text += f"{i}. {phone} {client_ok} {status} {safe_mark}\n   Текст: {acc['text'][:40]}...\n   Интервал: {acc['interval']} сек.\n"
-        keyboard_buttons = []
-        for phone in accounts:
-            keyboard_buttons.append([InlineKeyboardButton(f"⚙️ Управление {phone}", callback_data=f"manage_acc_{phone}")])
-        keyboard_buttons.append([InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")])
-        keyboard_buttons.append([InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate_key")])
-        keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")])
-        kb = InlineKeyboardMarkup(keyboard_buttons)
-    else:
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")],
-            [InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate_key")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]
-        ])
-    await query.message.edit_text(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
-
 async def show_info(query: CallbackQuery):
     text = "ℹ️ *О боте*\n\n🤖 **NeverkaBOT** — мощный инструмент для автоматической рассылки сообщений в Telegram-группы.\n\n⚙️ **Функции:**\n• Добавление нескольких аккаунтов\n• Настройка текста и интервала рассылки для каждого аккаунта\n• Безопасный режим с 3 разными текстами и случайным интервалом 55-70 мин\n• Управление подпиской через магазин или активацию ключа\n\n💰 *Для запуска рассылки требуется активная подписка.*\n📞 **Поддержка:** @its_neverka\n\n© 2026 NeverkaBOT"
     await query.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode=enums.ParseMode.MARKDOWN)
