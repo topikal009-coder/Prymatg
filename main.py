@@ -908,7 +908,7 @@ async def stop_all_accounts(user_id, message=None):
 
 async def show_profile_handler(user_id, message):
     """Отдельная функция для показа профиля"""
-    ensure_user_exists(user_id, message.from_user.username or message.from_user.first_name if hasattr(message.from_user, 'username') else "")
+    ensure_user_exists(user_id)
     data = users_data[user_id]
     accounts = data["accounts"]
     total = len(accounts)
@@ -1593,7 +1593,10 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+        try:
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+        except NotImplementedError:
+            pass
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:
