@@ -1,0 +1,10 @@
+{
+  "settings": {
+    "python": {
+      "github_attestations": false
+    }
+  },
+  "packages": {
+    "python": "3.11.6"
+  }
+}
