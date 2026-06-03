@@ -914,54 +914,6 @@ async def start_cmd(c: Client, m: Message):
     ensure_user_exists(user_id, username)
     await send_main_menu(m, user_id)
 
-# НОВАЯ КОМАНДА /profile - открывает профиль пользователя
-@bot.on_message(filters.command("profile") & filters.private)
-async def profile_cmd(c: Client, m: Message):
-    """
-    Команда для быстрого открытия профиля пользователя
-    """
-    user_id = m.from_user.id
-    ensure_user_exists(user_id, m.from_user.username or m.from_user.first_name)
-    
-    data = users_data[user_id]
-    accounts = data["accounts"]
-    total = len(accounts)
-    running = sum(1 for a in accounts.values() if a.get("running", False))
-    
-    text = f"👤 *Мой профиль*\n\n🆔 ID: `{user_id}`\n👤 Имя: {data.get('username', 'Не указано')}\n"
-    if data.get('bound_username'):
-        text += f"🔗 Привязан к: @{data['bound_username']}\n"
-    text += f"📱 Аккаунтов: {total}/{MAX_ACCOUNTS_PER_USER}\n🟢 Активных рассылок: {running}\n"
-    
-    if has_active_subscription(user_id):
-        text += f"📅 Подписка активна до: {datetime.fromisoformat(data['expires']).strftime('%d.%m.%Y')}\n"
-    else:
-        text += f"❌ *Подписка отсутствует* — для запуска рассылки необходимо её приобрести или активировать ключ.\n"
-    
-    if accounts:
-        text += "\n📋 *Список аккаунтов*:\n"
-        for i, (phone, acc) in enumerate(accounts.items(), 1):
-            status = "🟢 Активен" if acc.get("running", False) else "🔴 Остановлен"
-            client_ok = "✅" if "client" in acc else "❌"
-            safe_mark = "🛡" if acc.get("safe_mode", False) else ""
-            text += f"{i}. {phone} {client_ok} {status} {safe_mark}\n   Текст: {acc['text'][:40]}...\n   Интервал: {acc['interval']} сек.\n"
-        
-        keyboard_buttons = []
-        for phone in accounts:
-            keyboard_buttons.append([InlineKeyboardButton(f"⚙️ Управление {phone}", callback_data=f"manage_acc_{phone}")])
-        keyboard_buttons.append([InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")])
-        keyboard_buttons.append([InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate_key")])
-        keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")])
-        kb = InlineKeyboardMarkup(keyboard_buttons)
-    else:
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Добавить аккаунт", callback_data="add_account")],
-            [InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate_key")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_main")]
-        ])
-    
-    await m.reply(text, reply_markup=kb, parse_mode=enums.ParseMode.MARKDOWN)
-
 @bot.on_message(filters.command("give_subscription") & filters.private)
 async def give_subscription_command(c: Client, m: Message):
     if not is_admin(m.from_user.id):
